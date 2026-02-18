@@ -116,6 +116,58 @@ def make_engine_sound():
 
 engine_sound = make_engine_sound()
 engine_channel = pygame.mixer.Channel(7)
+music_channel = pygame.mixer.Channel(6)
+
+
+def make_music_loop():
+    """Generate a simple chiptune-style background loop."""
+    sample_rate = 44100
+    bpm = 140
+    beat = 60 / bpm
+    # 8-bar loop in minor pentatonic
+    notes = [
+        220, 261, 293, 349, 392,  # A3 C4 D4 F4 G4
+        440, 523, 587, 698, 784,  # A4 C5 D5 F5 G5
+    ]
+    melody = [0, 2, 4, 5, 4, 2, 3, 1, 0, 4, 5, 9, 7, 5, 4, 2]
+    bass_pattern = [0, 0, 3, 3, 5, 5, 2, 2, 0, 0, 3, 3, 5, 5, 4, 4]
+    total_beats = len(melody)
+    n_samples = int(sample_rate * beat * total_beats)
+    buf = array.array("h", [0] * n_samples)
+    samples_per_beat = int(sample_rate * beat)
+
+    for beat_idx in range(total_beats):
+        mel_freq = notes[melody[beat_idx]]
+        bass_freq = notes[bass_pattern[beat_idx]] / 2
+        start = beat_idx * samples_per_beat
+        for i in range(samples_per_beat):
+            t = i / sample_rate
+            env = max(0, 1.0 - (i / samples_per_beat) * 0.7)
+            # Melody: pulse wave
+            mel = 800 * env * (1 if (math.sin(2 * math.pi * mel_freq * t) > 0) else -1)
+            # Bass: triangle-ish
+            bass_phase = (bass_freq * t) % 1.0
+            bass = 600 * env * (abs(bass_phase - 0.5) * 4 - 1)
+            # Hi-hat on every beat
+            hat = 200 * max(0, 1.0 - i / (samples_per_beat * 0.05)) * random.uniform(-1, 1) if i < samples_per_beat * 0.05 else 0
+            val = int(mel + bass + hat)
+            idx = start + i
+            if idx < n_samples:
+                buf[idx] = max(-32768, min(32767, val))
+    return pygame.mixer.Sound(buffer=buf)
+
+
+music_loop = make_music_loop()
+
+# === Difficulty Presets ===
+DIFF_EASY = "easy"
+DIFF_NORMAL = "normal"
+DIFF_HARD = "hard"
+DIFFICULTY_SETTINGS = {
+    DIFF_EASY: {"lives": 5, "obstacle_mult": 0.6, "spawn_div": 0.7, "label": "EASY", "color": SLOWMO_GREEN},
+    DIFF_NORMAL: {"lives": 3, "obstacle_mult": 1.0, "spawn_div": 1.0, "label": "NORMAL", "color": SOLAR_YELLOW},
+    DIFF_HARD: {"lives": 2, "obstacle_mult": 1.5, "spawn_div": 1.4, "label": "HARD", "color": NEON_MAGENTA},
+}
 
 
 # === Fonts ===
@@ -188,6 +240,114 @@ class ScreenShake:
         return (int(self.offset_x), int(self.offset_y))
 
 
+# === Floating Score Popups ===
+class FloatingText:
+    def __init__(self, x, y, text, color, size=20):
+        self.x = x
+        self.y = float(y)
+        self.text = text
+        self.color = color
+        self.font = load_font("dejavusans", size, bold=True)
+        self.life = 60
+        self.max_life = 60
+
+    def update(self):
+        self.y -= 1.2
+        self.life -= 1
+        return self.life > 0
+
+    def draw(self, surface):
+        alpha = int(255 * (self.life / self.max_life))
+        txt = self.font.render(self.text, True, self.color)
+        txt.set_alpha(alpha)
+        surface.blit(txt, (int(self.x) - txt.get_width() // 2, int(self.y)))
+
+
+# === Combo Tracker ===
+class ComboTracker:
+    def __init__(self):
+        self.count = 0
+        self.timer = 0
+        self.multiplier = 1
+        self.display_timer = 0
+
+    def hit(self):
+        self.count += 1
+        self.timer = 90  # 1.5 seconds window
+        if self.count >= 10:
+            self.multiplier = 4
+        elif self.count >= 5:
+            self.multiplier = 3
+        elif self.count >= 3:
+            self.multiplier = 2
+        else:
+            self.multiplier = 1
+        if self.multiplier > 1:
+            self.display_timer = 90
+
+    def update(self):
+        if self.timer > 0:
+            self.timer -= 1
+            if self.timer <= 0:
+                self.count = 0
+                self.multiplier = 1
+        if self.display_timer > 0:
+            self.display_timer -= 1
+
+    def get_bonus(self, base_score):
+        return base_score * self.multiplier
+
+    def draw(self, surface, x, y):
+        if self.display_timer > 0 and self.multiplier > 1:
+            alpha = min(255, self.display_timer * 6)
+            scale = 1.0 + 0.3 * math.sin(self.display_timer * 0.2)
+            size = int(28 * scale)
+            font = load_font("dejavusans", size, bold=True)
+            colors = {2: SOLAR_YELLOW, 3: DESERT_ORANGE, 4: NEON_MAGENTA}
+            color = colors.get(self.multiplier, SOLAR_YELLOW)
+            txt = font.render(f"COMBO x{self.multiplier}!", True, color)
+            txt.set_alpha(alpha)
+            surface.blit(txt, (x - txt.get_width() // 2, y))
+
+
+# === Milestone Tracker ===
+class MilestoneTracker:
+    def __init__(self):
+        self.last_km = 0
+        self.display_text = ""
+        self.display_timer = 0
+        self.display_color = SOLAR_YELLOW
+
+    def check(self, distance):
+        km = int(distance)
+        if km > self.last_km and km > 0:
+            self.last_km = km
+            if km % 5 == 0:
+                self.display_text = f"{km} KM! INCREDIBLE!"
+                self.display_color = NEON_MAGENTA
+                self.display_timer = 120
+            else:
+                self.display_text = f"{km} KM!"
+                self.display_color = SOLAR_YELLOW
+                self.display_timer = 80
+            SFX["select"].play()
+
+    def update(self):
+        if self.display_timer > 0:
+            self.display_timer -= 1
+
+    def draw(self, surface):
+        if self.display_timer > 0:
+            progress = self.display_timer / 80
+            size = int(36 + 12 * max(0, progress - 0.7) * 3.3)
+            font = load_font("dejavusans", size, bold=True)
+            txt = font.render(self.display_text, True, self.display_color)
+            alpha = min(255, self.display_timer * 5)
+            txt.set_alpha(alpha)
+            y = SCREEN_HEIGHT // 2 - 60
+            surface.blit(txt, (SCREEN_WIDTH // 2 - txt.get_width() // 2, y))
+
+
 # === Particles ===
 class Particle(pygame.sprite.Sprite):
     def __init__(self, x, y, color, vel=None, life=60, size=3):
@@ -255,9 +415,10 @@ def make_vehicle_surface(color_main, color_accent, is_ghost=False):
 
 # === Player ===
 class Player(pygame.sprite.Sprite):
-    def __init__(self, particles, player_num=1, x_pos=None, solo=False):
+    def __init__(self, particles, player_num=1, x_pos=None, solo=False, diff=DIFF_NORMAL):
         super().__init__()
         self.player_num = player_num
+        self.diff_settings = DIFFICULTY_SETTINGS[diff]
         if player_num == 1:
             self.color_main = (0, 180, 200)
             self.color_accent = NEON_CYAN
@@ -300,10 +461,12 @@ class Player(pygame.sprite.Sprite):
         self.crash_emit = False
         self.flare_hit = False
 
-        self.lives = MAX_LIVES
+        self.lives = self.diff_settings["lives"]
+        self.max_lives = self.diff_settings["lives"]
         self.score = 0
         self.distance = 0.0
         self.coins = 0
+        self.combo = ComboTracker()
         self.invincible_timer = 0
         self.shield = False
         self.shield_timer = 0
@@ -636,7 +799,7 @@ class Background:
 
 # === HUD ===
 def draw_lives_icons(screen, player, x, y):
-    for i in range(MAX_LIVES):
+    for i in range(player.max_lives):
         color = player.color_accent if i < player.lives else (50, 50, 60)
         cx = x + i * 22 + 8
         pts = [(cx, y), (cx + 6, y + 12), (cx - 6, y + 12)]
@@ -700,7 +863,7 @@ def draw_hud(screen, players, game_distance, flare_timer, two_player):
 
 
 # === Screens ===
-def draw_title(screen, tick):
+def draw_title(screen, tick, selected_diff=DIFF_NORMAL):
     t = (tick % 180) / 180
     r = int(15 + 10 * math.sin(t * math.pi * 2))
     g = int(5 + 5 * math.sin(t * math.pi * 2 + 0.5))
@@ -727,18 +890,27 @@ def draw_title(screen, tick):
     blink = (tick // 30) % 2
     if blink:
         p1 = FONT_HUD.render("[1] SOLO RACE", True, NEON_CYAN)
-        screen.blit(p1, (SCREEN_WIDTH // 2 - p1.get_width() // 2, 260))
+        screen.blit(p1, (SCREEN_WIDTH // 2 - p1.get_width() // 2, 250))
         p2 = FONT_HUD.render("[2] TWO PLAYER", True, NEON_MAGENTA)
-        screen.blit(p2, (SCREEN_WIDTH // 2 - p2.get_width() // 2, 295))
+        screen.blit(p2, (SCREEN_WIDTH // 2 - p2.get_width() // 2, 280))
 
-    c1 = FONT_HUD_SM.render("P1: WASD + L.Shift boost", True, NEON_CYAN)
-    screen.blit(c1, (SCREEN_WIDTH // 2 - c1.get_width() // 2, 370))
-    c1b = FONT_HUD_SM.render("Solo: WASD or Arrows + Shift/Space boost", True, (120, 120, 140))
-    screen.blit(c1b, (SCREEN_WIDTH // 2 - c1b.get_width() // 2, 390))
+    # Difficulty selector
+    diff_y = 320
+    diff_label = FONT_HUD_SM.render("Difficulty:", True, (150, 150, 170))
+    screen.blit(diff_label, (SCREEN_WIDTH // 2 - 130, diff_y))
+    for i, d in enumerate([DIFF_EASY, DIFF_NORMAL, DIFF_HARD]):
+        ds = DIFFICULTY_SETTINGS[d]
+        key_str = f"[{i + 3}]" if selected_diff != d else f">{ds['label']}<"
+        color = ds["color"] if selected_diff == d else (100, 100, 120)
+        dt = FONT_HUD_SM.render(f"{key_str} {ds['label']}" if selected_diff != d else key_str, True, color)
+        screen.blit(dt, (SCREEN_WIDTH // 2 - 40 + i * 80, diff_y))
+
+    c1 = FONT_HUD_SM.render("P1: WASD + L.Shift   Solo: WASD/Arrows + Shift/Space", True, (120, 120, 140))
+    screen.blit(c1, (SCREEN_WIDTH // 2 - c1.get_width() // 2, 360))
     c2 = FONT_HUD_SM.render("P2: Arrows + R.Shift boost", True, NEON_MAGENTA)
-    screen.blit(c2, (SCREEN_WIDTH // 2 - c2.get_width() // 2, 412))
+    screen.blit(c2, (SCREEN_WIDTH // 2 - c2.get_width() // 2, 380))
     c3 = FONT_HUD_SM.render("P = Pause   F11 = Fullscreen   F2 = 2x Scale", True, (100, 100, 120))
-    screen.blit(c3, (SCREEN_WIDTH // 2 - c3.get_width() // 2, 440))
+    screen.blit(c3, (SCREEN_WIDTH // 2 - c3.get_width() // 2, 405))
 
     scores = load_highscores()
     if scores:
@@ -914,10 +1086,13 @@ def main():
     game_distance = 0.0
     difficulty = 1.0
     highscore_entry: HighScoreEntry | None = None
+    selected_diff = DIFF_NORMAL
+    floating_texts: list[FloatingText] = []
+    milestone = MilestoneTracker()
 
     def start_game(num_players):
         nonlocal players, two_player, obstacle_timer, coin_timer, powerup_timer
-        nonlocal flare_timer, screen_flash, game_distance, difficulty
+        nonlocal flare_timer, screen_flash, game_distance, difficulty, floating_texts, milestone
 
         for g in [all_sprites, obstacles, coins_group, powerups_group, flares]:
             for s in list(g):
@@ -927,14 +1102,16 @@ def main():
 
         two_player = num_players == 2
         players.clear()
+        floating_texts.clear()
+        milestone = MilestoneTracker()
 
         if two_player:
-            p1 = Player(particles, 1, ROAD_CENTER - 60)
-            p2 = Player(particles, 2, ROAD_CENTER + 60)
+            p1 = Player(particles, 1, ROAD_CENTER - 60, diff=selected_diff)
+            p2 = Player(particles, 2, ROAD_CENTER + 60, diff=selected_diff)
             players.extend([p1, p2])
             all_sprites.add(p1, p2)
         else:
-            p1 = Player(particles, 1, ROAD_CENTER, solo=True)
+            p1 = Player(particles, 1, ROAD_CENTER, solo=True, diff=selected_diff)
             players.append(p1)
             all_sprites.add(p1)
 
@@ -945,6 +1122,11 @@ def main():
         screen_flash = 0
         game_distance = 0.0
         difficulty = 1.0
+
+        # Start music
+        if not music_channel.get_busy():
+            music_channel.play(music_loop, loops=-1)
+            music_channel.set_volume(0.08)
 
     running = True
     while running:
@@ -962,6 +1144,15 @@ def main():
                         start_game(2)
                         state = STATE_PLAY
                         SFX["select"].play()
+                    elif event.key in (pygame.K_3, pygame.K_KP3):
+                        selected_diff = DIFF_EASY
+                        SFX["select"].play()
+                    elif event.key in (pygame.K_4, pygame.K_KP4):
+                        selected_diff = DIFF_NORMAL
+                        SFX["select"].play()
+                    elif event.key in (pygame.K_5, pygame.K_KP5):
+                        selected_diff = DIFF_HARD
+                        SFX["select"].play()
                     elif event.key == pygame.K_ESCAPE:
                         running = False
 
@@ -972,6 +1163,8 @@ def main():
                         state = STATE_TITLE
                         if engine_channel.get_busy():
                             engine_channel.fadeout(200)
+                        if music_channel.get_busy():
+                            music_channel.fadeout(300)
 
                 elif state == STATE_PAUSED:
                     if event.key == pygame.K_p:
@@ -1010,7 +1203,7 @@ def main():
         keys = pygame.key.get_pressed()
 
         if state == STATE_TITLE:
-            draw_title(screen, tick)
+            draw_title(screen, tick, selected_diff)
 
         elif state == STATE_PLAY:
             any_slowmo = any(p.slowmo for p in players if p.alive)
@@ -1033,12 +1226,25 @@ def main():
 
             game_distance += scroll_speed * 0.01
             difficulty = 1.0 + game_distance * 0.15
+            diff_s = DIFFICULTY_SETTINGS[selected_diff]
 
-            # Spawn obstacles
+            # Milestone check
+            milestone.check(game_distance)
+            milestone.update()
+
+            # Update combos
+            for p in players:
+                if p.alive:
+                    p.combo.update()
+
+            # Update floating texts
+            floating_texts[:] = [ft for ft in floating_texts if ft.update()]
+
+            # Spawn obstacles (difficulty-scaled)
             obstacle_timer += 1
-            spawn_rate = max(12, int(45 / difficulty))
+            spawn_rate = max(12, int(45 / (difficulty * diff_s["spawn_div"])))
             if obstacle_timer > spawn_rate:
-                obs = Obstacle(min(difficulty, 3.0))
+                obs = Obstacle(min(difficulty * diff_s["obstacle_mult"], 3.0))
                 all_sprites.add(obs)
                 obstacles.add(obs)
                 obstacle_timer = 0
@@ -1094,8 +1300,12 @@ def main():
                 collected_coins = pygame.sprite.spritecollide(p, coins_group, True)
                 for _ in collected_coins:
                     p.coins += 1
-                    p.score += 50
+                    p.combo.hit()
+                    pts = p.combo.get_bonus(50)
+                    p.score += pts
                     particles.burst(p.rect.centerx, p.rect.centery - 10, [COIN_GOLD, SOLAR_YELLOW], 6, 3, 20, 2)
+                    color = NEON_MAGENTA if p.combo.multiplier > 1 else COIN_GOLD
+                    floating_texts.append(FloatingText(p.rect.centerx, p.rect.top - 15, f"+{pts}", color))
                     SFX["coin"].play()
 
                 collected_pups = pygame.sprite.spritecollide(p, powerups_group, True)
@@ -1111,11 +1321,13 @@ def main():
                         p.slowmo_timer = 300
                     p.score += 100
                     particles.burst(p.rect.centerx, p.rect.centery, [POWERUP_COLORS[pu.kind]], 8, 4, 30, 3)
+                    floating_texts.append(FloatingText(p.rect.centerx, p.rect.top - 15, "+100", POWERUP_COLORS[pu.kind]))
                     SFX["powerup"].play()
 
                 if p.flare_hit:
                     screen_flash = 30
                     p.flare_hit = False
+                    floating_texts.append(FloatingText(p.rect.centerx, p.rect.top - 30, "+200 FLARE!", SOLAR_YELLOW, 24))
 
             particles.update()
             shake.update()
@@ -1149,6 +1361,18 @@ def main():
 
             draw_hud(screen, players, game_distance, flare_timer, two_player)
 
+            # Floating score popups
+            for ft in floating_texts:
+                ft.draw(screen)
+
+            # Combo display
+            for p in alive_players:
+                cx = p.rect.centerx
+                p.combo.draw(screen, cx, p.rect.top - 50)
+
+            # Milestone celebration
+            milestone.draw(screen)
+
             # Engine sound
             if max_speed > 1 and not engine_channel.get_busy():
                 engine_channel.play(engine_sound, loops=-1)
@@ -1165,6 +1389,8 @@ def main():
             draw_gameover(screen, players, game_distance, tick, two_player)
             if engine_channel.get_busy():
                 engine_channel.fadeout(300)
+            if music_channel.get_busy():
+                music_channel.fadeout(500)
 
         elif state == STATE_HIGHSCORE:
             if highscore_entry:
