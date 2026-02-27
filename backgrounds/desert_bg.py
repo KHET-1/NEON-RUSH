@@ -12,8 +12,8 @@ from core.constants import (
 # V2 deep-sky color (replaces flat DESERT_BG for star visibility)
 _V2_SKY = (15, 8, 25)
 _V2_MESA_COLOR = (80, 35, 20)
-_V2_DUNE_COLOR = (160, 85, 25)
-_V2_DUNE_RIDGE = (190, 110, 40)
+_V2_DUNE_COLOR = (90, 55, 20)
+_V2_DUNE_RIDGE = (120, 75, 30)
 _V2_RUMBLE_DARK = (50, 45, 40)
 _V2_RUMBLE_LIGHT = (90, 80, 65)
 _V2_HORIZON_GLOW = (200, 100, 20)
@@ -112,33 +112,26 @@ class Background:
         self._dune_phase += 0.002
         dune_scroll = self.scroll_y * 0.35
 
-        # Draw dune profiles on both sides of road
+        # Draw dune profiles on both sides of road (narrow sand banks)
         for side in ('left', 'right'):
             if side == 'left':
-                x_start, x_end = 0, ROAD_LEFT - 20
+                edge = ROAD_LEFT - 24
             else:
-                x_start, x_end = ROAD_RIGHT + 20, SCREEN_WIDTH
-
-            if x_end <= x_start:
-                continue
+                edge = ROAD_RIGHT + 24
 
             for y in range(int(SCREEN_HEIGHT * 0.32), SCREEN_HEIGHT, 2):
-                wave = 18 * math.sin(y * 0.015 + dune_scroll * 0.008 + self._dune_phase)
-                wave += 10 * math.sin(y * 0.03 + dune_scroll * 0.012 + 1.5)
+                wave = 12 * math.sin(y * 0.015 + dune_scroll * 0.008 + self._dune_phase)
+                wave += 6 * math.sin(y * 0.03 + dune_scroll * 0.012 + 1.5)
+                width = int(18 + 8 * math.sin(y * 0.01 + self._dune_phase * 0.5))
 
                 if side == 'left':
-                    dx = int(x_end + wave)
-                    dx = min(dx, x_end + 30)
-                    draw_x = max(x_start, dx - 50)
-                    pygame.draw.line(screen, _V2_DUNE_COLOR, (draw_x, y), (dx, y))
-                    # Ridge highlight
-                    pygame.draw.line(screen, _V2_DUNE_RIDGE, (dx - 2, y), (dx, y), 1)
+                    dx = int(edge + wave)
+                    pygame.draw.line(screen, _V2_DUNE_COLOR, (dx - width, y), (dx, y))
+                    pygame.draw.line(screen, _V2_DUNE_RIDGE, (dx - 1, y), (dx, y), 1)
                 else:
-                    dx = int(x_start + wave)
-                    dx = max(dx, x_start - 30)
-                    draw_end = min(x_end, dx + 50)
-                    pygame.draw.line(screen, _V2_DUNE_COLOR, (dx, y), (draw_end, y))
-                    pygame.draw.line(screen, _V2_DUNE_RIDGE, (dx, y), (dx + 2, y), 1)
+                    dx = int(edge + wave)
+                    pygame.draw.line(screen, _V2_DUNE_COLOR, (dx, y), (dx + width, y))
+                    pygame.draw.line(screen, _V2_DUNE_RIDGE, (dx, y), (dx + 1, y), 1)
 
     # --- Layer 3: Road Shoulders with rumble strips (parallax 0.7x) ---
     def _draw_v2_shoulders(self, screen):
