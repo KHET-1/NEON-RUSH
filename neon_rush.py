@@ -611,12 +611,15 @@ def _draw_victory(screen, shared_state, tick):
 
     if shared_state:
         y = py + 130
+        evo_tier = getattr(shared_state, 'evolution_tier', 1)
+        cycles = getattr(shared_state, 'cycle_count', 0)
+        bosses_total = shared_state.bosses_defeated
         stats = [
             ("Total Score", str(shared_state.best_score)),
             ("Total Coins", str(shared_state.total_coins)),
             ("Distance", f"{shared_state.total_distance:.1f} km"),
-            ("Bosses", f"{shared_state.bosses_defeated}/3"),
-            ("Modes", " → ".join(MODE_NAMES[:shared_state.bosses_defeated])),
+            ("Bosses", f"{bosses_total}" + (f" ({cycles} cycles)" if cycles > 0 else "/3")),
+            ("Evolution", f"V{evo_tier}" if evo_tier > 1 else "V1 (base)"),
         ]
         for label, value in stats:
             lt = FONT_HUD_SM.render(f"{label}:", True, (180, 180, 200))

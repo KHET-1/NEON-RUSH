@@ -126,14 +126,22 @@ class ExcitebikeBg:
         # Draw lanes
         self._draw_lanes(screen)
 
-        # V2+: Neon glow on lane edges
+        # V2+: Pulsing neon glow on lane borders
         if self.tier >= 2:
-            glow_surf = pygame.Surface((SCREEN_WIDTH, 4), pygame.SRCALPHA)
-            glow_alpha = int(40 + 20 * math.sin(self.scroll_x * 0.01))
-            glow_surf.fill((*NEON_CYAN[:3], glow_alpha))
-            for ly in self.LANE_Y:
-                screen.blit(glow_surf, (0, ly - 2))
-                screen.blit(glow_surf, (0, ly + self.LANE_HEIGHT - 2))
+            pulse = math.sin(self.scroll_x * 0.015)
+            # Top border: NEON_CYAN glow, width expands 2→6px
+            top_w = int(3 + 3 * (0.5 + 0.5 * pulse))
+            top_alpha = int(80 + 60 * (0.5 + 0.5 * pulse))
+            top_glow = pygame.Surface((SCREEN_WIDTH, top_w), pygame.SRCALPHA)
+            top_glow.fill((*NEON_CYAN[:3], top_alpha))
+            screen.blit(top_glow, (0, self.LANE_Y[0] - top_w))
+            # Bottom border: NEON_MAGENTA glow
+            bot_w = int(3 + 3 * (0.5 - 0.5 * pulse))
+            bot_alpha = int(80 + 60 * (0.5 - 0.5 * pulse))
+            bot_glow = pygame.Surface((SCREEN_WIDTH, bot_w), pygame.SRCALPHA)
+            bot_glow.fill((*NEON_MAGENTA[:3], bot_alpha))
+            bot_y = self.LANE_Y[-1] + self.LANE_HEIGHT + 2
+            screen.blit(bot_glow, (0, bot_y))
 
     def _draw_mountains(self, screen, peaks, color, scroll, base_y):
         offset = int(scroll) % (SCREEN_WIDTH * 3)

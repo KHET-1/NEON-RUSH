@@ -441,20 +441,39 @@ class MicroMachinesBG:
             cp_y += CHECKPOINT_INTERVAL
 
     def _draw_v2_overlay(self, screen):
-        """V2+ visual enhancements: heat haze + tire marks + wider rumble glow."""
-        # Pulsing heat haze overlay
-        haze_alpha = int(12 + 8 * math.sin(self._haze_phase))
+        """V2+ visual enhancements: atmosphere fog, oil stains, tire marks, enhanced rumble."""
+        # Pulsing atmosphere fog overlay (depth effect)
+        haze_alpha = int(10 + 6 * math.sin(self._haze_phase))
         haze = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        haze.fill((180, 140, 80, haze_alpha))
+        haze.fill((18, 15, 22, haze_alpha))
         screen.blit(haze, (0, 0))
 
-        # Tire marks on visible road segments
+        # Oil stains + tire marks on visible road segments
         mark_color = (35, 33, 30)
+        oil_color = (25, 22, 28)
+        rng = random.Random(42)  # deterministic per draw for stability
         for seg in self.segments:
             sy_start = seg.y_start - self.scroll_offset
             sy_end = seg.y_end - self.scroll_offset
             if sy_end < 0 or sy_start > SCREEN_HEIGHT:
                 continue
+
+            # Oil stains: 3-5 dark circles per segment (seeded by segment y_start)
+            seg_rng = random.Random(int(seg.y_start) ^ 0xDEAD)
+            num_stains = seg_rng.randint(3, 5)
+            for _ in range(num_stains):
+                local_t = seg_rng.uniform(0.1, 0.9)
+                cx = seg.get_center_x(local_t)
+                oy = sy_start + local_t * (sy_end - sy_start)
+                if 0 <= oy < SCREEN_HEIGHT:
+                    ox = int(cx + seg_rng.randint(-HALF_TRACK + 15, HALF_TRACK - 15))
+                    r = seg_rng.randint(4, 10)
+                    oil_surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
+                    pygame.draw.ellipse(oil_surf, (*oil_color, 60),
+                                        (0, 0, r * 2, r * 2))
+                    screen.blit(oil_surf, (ox - r, int(oy) - r))
+
+            # Tire marks
             for offset_ratio, length, angle in self._tire_marks:
                 local_t = 0.5
                 cx = seg.get_center_x(local_t)
@@ -464,3 +483,24 @@ class MicroMachinesBG:
                     ex = mx + int(math.sin(angle) * length)
                     ey = my + int(math.cos(angle) * length)
                     pygame.draw.line(screen, mark_color, (mx, my), (ex, ey), 2)
+
+            # Enhanced rumble strips on curves: inner highlight line
+            if seg.rumble_side and seg.seg_type not in (SEG_STRAIGHT,):
+                step = 6
+                for y in range(max(0, int(sy_start)), min(SCREEN_HEIGHT, int(sy_end)), step):
+                    if seg.length > 0:
+                        lt = (y - sy_start) / (sy_end - sy_start)
+                        lt = max(0.0, min(1.0, lt))
+                    else:
+                        lt = 0.0
+                    cx = seg.get_center_x(lt)
+                    left = int(cx - HALF_TRACK)
+                    right = int(cx + HALF_TRACK)
+                    # Color-cycle at 2x speed
+                    world_y = y + self.scroll_offset
+                    ridx = int(world_y / 3) % 2
+                    hl_color = (255, 80, 80) if ridx == 0 else (255, 255, 255)
+                    if seg.rumble_side in ("left", "both"):
+                        pygame.draw.line(screen, (*hl_color[:3],), (left - 4, y), (left - 3, y), 1)
+                    if seg.rumble_side in ("right", "both"):
+                        pygame.draw.line(screen, (*hl_color[:3],), (right + 3, y), (right + 4, y), 1)

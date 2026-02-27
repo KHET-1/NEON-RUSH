@@ -15,6 +15,7 @@ class SharedPlayerState:
         self.bosses_defeated = 0
         self.current_mode = 0  # 0=desert, 1=excitebike, 2=micromachines
         self.evolution_tier = evolution_tier  # 1=normal, 2=V2, 3=V3...
+        self.cycle_count = 0
 
     def snapshot_from_players(self, players):
         """Pull current stats from player objects at end of a mode."""
@@ -41,6 +42,7 @@ class SharedPlayerState:
     def reset_for_cycle(self, new_tier):
         """Reset mode index for a new evolution cycle, keeping scores/lives."""
         self.current_mode = 0
+        self.cycle_count += 1
         self.evolution_tier = new_tier
         # Don't reset bosses_defeated — it accumulates across cycles
 

@@ -31,9 +31,13 @@ class EvolutionManager:
     # --- Cycling API (called by neon_rush.py) ---
 
     def start_run(self):
-        """Reset for a new game. Tier starts at 1."""
-        self.current_tier = 1
-        self.cycle_count = 0
+        """Reset for a new game. When enabled, start at max unlocked tier."""
+        if self.enabled and self.max_tier > 1:
+            self.current_tier = self.max_tier
+            self.cycle_count = self.max_tier - 1
+        else:
+            self.current_tier = 1
+            self.cycle_count = 0
 
     def advance_cycle(self):
         """Called after all 3 bosses defeated. Returns new tier."""
