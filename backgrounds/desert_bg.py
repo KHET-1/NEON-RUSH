@@ -9,14 +9,36 @@ from core.constants import (
     DESERT_BG, DASH_LENGTH, DASH_GAP,
 )
 
-# V2 deep-sky color (replaces flat DESERT_BG for star visibility)
+# V2 palette
 _V2_SKY = (15, 8, 25)
 _V2_MESA_COLOR = (80, 35, 20)
-_V2_DUNE_COLOR = (90, 55, 20)
-_V2_DUNE_RIDGE = (120, 75, 30)
-_V2_RUMBLE_DARK = (50, 45, 40)
-_V2_RUMBLE_LIGHT = (90, 80, 65)
 _V2_HORIZON_GLOW = (200, 100, 20)
+
+# Ground strip colors — alternating pairs that scroll at perspective speed
+# Far (horizon) = dark/muted, Near (bottom) = warm/saturated
+_STRIP_A = [
+    (35, 22, 30),   # far — dark purple-brown
+    (55, 35, 25),   # mid-far — dusty brown
+    (80, 52, 28),   # mid — warm sand
+    (100, 65, 32),  # mid-near — bright sand
+    (115, 75, 35),  # near — golden sand
+]
+_STRIP_B = [
+    (28, 18, 24),   # far — darker
+    (45, 28, 20),   # mid-far
+    (65, 42, 22),   # mid
+    (85, 55, 26),   # mid-near
+    (100, 65, 30),  # near
+]
+
+# Rumble strips
+_RUMBLE_A = (200, 50, 50)
+_RUMBLE_B = (220, 220, 220)
+
+# Horizon Y — where ground starts
+_HORIZON_Y = int(SCREEN_HEIGHT * 0.30)
+_GROUND_ROWS = SCREEN_HEIGHT - _HORIZON_Y
+_BAND_HEIGHT = 18  # pixel height of each color band before perspective
 
 
 class Background:
@@ -27,48 +49,48 @@ class Background:
         self.tier = tier
         self._tick = 0
 
-        # V2+ layers — 5 layer parallax
         if tier >= 2:
             self._stars = self._gen_stars()
             self._mesas = self._gen_mesas()
-            self._dune_phase = 0.0
-            self._drift_particles = []  # sand drift near road edges
+            # Pre-compute per-scanline parallax speeds (quadratic perspective)
+            self._line_speeds = []
+            for y in range(_HORIZON_Y, SCREEN_HEIGHT):
+                t = (y - _HORIZON_Y) / max(1, _GROUND_ROWS)
+                # Quadratic gives good perspective feel
+                self._line_speeds.append(t * t)
 
     def _gen_stars(self):
-        """50 stars with position, size, base brightness, and phase offset."""
         rng = random.Random(77)
         stars = []
         for _ in range(50):
             stars.append({
                 'x': rng.randint(0, SCREEN_WIDTH),
-                'y': rng.randint(5, int(SCREEN_HEIGHT * 0.28)),
+                'y': rng.randint(5, _HORIZON_Y - 10),
                 'sz': rng.choice([1, 1, 1, 2]),
                 'bright': rng.randint(140, 255),
                 'phase': rng.uniform(0, math.pi * 2),
-                'cyan': rng.random() < 0.2,  # 20% are cyan-tinted
+                'cyan': rng.random() < 0.2,
             })
         return stars
 
     def _gen_mesas(self):
-        """4-5 flat-topped mesa trapezoidal silhouettes that tile horizontally."""
         rng = random.Random(33)
         mesas = []
         x = -100
-        tile_w = SCREEN_WIDTH * 2  # tile width for seamless scroll
+        tile_w = SCREEN_WIDTH * 2
         while x < tile_w + 200:
             w = rng.randint(90, 180)
-            h = rng.randint(50, 100)
+            h = rng.randint(40, 80)
             flat_top = rng.randint(int(w * 0.3), int(w * 0.7))
             mesas.append((x, h, w, flat_top))
             x += w + rng.randint(40, 100)
         return mesas
 
-    # --- Layer 0: Star Field (parallax 0.05x) ---
+    # --- Layer 0: Stars ---
     def _draw_stars(self, screen):
         star_scroll = self.scroll_y * 0.05
         for s in self._stars:
-            dy = int((s['y'] + star_scroll * 0.3) % (SCREEN_HEIGHT * 0.3))
-            # Pulsing alpha via sine
+            dy = int((s['y'] + star_scroll * 0.3) % _HORIZON_Y)
             pulse = math.sin(self._tick * 0.03 + s['phase'])
             bright = max(60, min(255, int(s['bright'] + 40 * pulse)))
             if s['cyan']:
@@ -77,116 +99,80 @@ class Background:
                 color = (bright, bright, max(0, bright - 30))
             pygame.draw.circle(screen, color, (s['x'], dy), s['sz'])
 
-    # --- Layer 1: Distant Mesas (parallax 0.15x) ---
+    # --- Layer 1: Mesas ---
     def _draw_mesas(self, screen):
-        mesa_base_y = int(SCREEN_HEIGHT * 0.32)
         tile_w = SCREEN_WIDTH * 2
         mesa_scroll = int(self.scroll_y * 0.15) % tile_w
 
-        # Orange horizon glow line
-        glow_y = mesa_base_y + 2
-        glow_alpha = int(60 + 30 * math.sin(self._tick * 0.02))
-        glow_surf = pygame.Surface((SCREEN_WIDTH, 3), pygame.SRCALPHA)
-        glow_surf.fill((*_V2_HORIZON_GLOW, glow_alpha))
-        screen.blit(glow_surf, (0, glow_y))
+        # Horizon glow
+        glow_alpha = int(50 + 30 * math.sin(self._tick * 0.02))
+        glow = pygame.Surface((SCREEN_WIDTH, 4), pygame.SRCALPHA)
+        glow.fill((*_V2_HORIZON_GLOW, glow_alpha))
+        screen.blit(glow, (0, _HORIZON_Y - 2))
 
         for mx, mh, mw, flat in self._mesas:
             sx = (mx - mesa_scroll) % tile_w - 200
             if sx + mw < -50 or sx > SCREEN_WIDTH + 50:
                 continue
             inset = (mw - flat) // 3
-            points = [
-                (sx, mesa_base_y),
-                (sx + inset, mesa_base_y - mh),
-                (sx + inset + flat, mesa_base_y - mh),
-                (sx + mw, mesa_base_y),
+            pts = [
+                (sx, _HORIZON_Y),
+                (sx + inset, _HORIZON_Y - mh),
+                (sx + inset + flat, _HORIZON_Y - mh),
+                (sx + mw, _HORIZON_Y),
             ]
-            pygame.draw.polygon(screen, _V2_MESA_COLOR, points)
-            # Subtle highlight on flat top
+            pygame.draw.polygon(screen, _V2_MESA_COLOR, pts)
             pygame.draw.line(screen, (100, 50, 30),
-                             (sx + inset, mesa_base_y - mh),
-                             (sx + inset + flat, mesa_base_y - mh), 1)
+                             (sx + inset, _HORIZON_Y - mh),
+                             (sx + inset + flat, _HORIZON_Y - mh), 1)
 
-    # --- Layer 2: Mid Dunes (parallax 0.35x) ---
-    def _draw_dunes(self, screen):
-        self._dune_phase += 0.002
-        dune_scroll = self.scroll_y * 0.35
+    # --- Layer 2-4: Parallax ground strips + rumble + road shoulders ---
+    def _draw_ground_strips(self, screen):
+        """Draw off-road ground as horizontal strips scrolling at perspective speed.
 
-        # Draw dune profiles on both sides of road (narrow sand banks)
-        for side in ('left', 'right'):
-            if side == 'left':
-                edge = ROAD_LEFT - 24
-            else:
-                edge = ROAD_RIGHT + 24
+        Each scanline from horizon to screen bottom gets its own scroll offset
+        based on quadratic distance (simulates perspective). Strips alternate
+        colors and scroll faster the closer they are to the player.
+        """
+        left_w = ROAD_LEFT - 24          # off-road left width
+        right_x = ROAD_RIGHT + 24        # off-road right start
+        right_w = SCREEN_WIDTH - right_x  # off-road right width
+        scroll = self.scroll_y
 
-            for y in range(int(SCREEN_HEIGHT * 0.32), SCREEN_HEIGHT, 2):
-                wave = 12 * math.sin(y * 0.015 + dune_scroll * 0.008 + self._dune_phase)
-                wave += 6 * math.sin(y * 0.03 + dune_scroll * 0.012 + 1.5)
-                width = int(18 + 8 * math.sin(y * 0.01 + self._dune_phase * 0.5))
+        for i, y in enumerate(range(_HORIZON_Y, SCREEN_HEIGHT)):
+            speed_mult = self._line_speeds[i]
+            # Vertical scroll offset for this scanline
+            offset = scroll * speed_mult
+            # Which color band are we in?
+            band_idx = int((y + offset) / _BAND_HEIGHT) % 2
 
-                if side == 'left':
-                    dx = int(edge + wave)
-                    pygame.draw.line(screen, _V2_DUNE_COLOR, (dx - width, y), (dx, y))
-                    pygame.draw.line(screen, _V2_DUNE_RIDGE, (dx - 1, y), (dx, y), 1)
-                else:
-                    dx = int(edge + wave)
-                    pygame.draw.line(screen, _V2_DUNE_COLOR, (dx, y), (dx + width, y))
-                    pygame.draw.line(screen, _V2_DUNE_RIDGE, (dx, y), (dx + 1, y), 1)
+            # Depth ratio: 0=horizon 1=bottom  — picks from color gradient
+            t = i / max(1, _GROUND_ROWS)
+            color_slot = min(4, int(t * 5))
+            color = _STRIP_A[color_slot] if band_idx == 0 else _STRIP_B[color_slot]
 
-    # --- Layer 3: Road Shoulders with rumble strips (parallax 0.7x) ---
-    def _draw_v2_shoulders(self, screen):
-        rumble_period = 12  # alternating 6px dark / 6px light
-        offset = int(self.scroll_y * 0.7) % rumble_period
+            # Draw left off-road strip
+            if left_w > 0:
+                pygame.draw.line(screen, color, (0, y), (left_w, y))
 
-        for y in range(0, SCREEN_HEIGHT, 2):
-            block = ((y - offset) // 6) % 2
-            color = _V2_RUMBLE_DARK if block == 0 else _V2_RUMBLE_LIGHT
-            # Left shoulder rumble strip
-            pygame.draw.line(screen, color, (ROAD_LEFT - 22, y), (ROAD_LEFT - 10, y), 2)
-            # Right shoulder rumble strip
-            pygame.draw.line(screen, color, (ROAD_RIGHT + 10, y), (ROAD_RIGHT + 22, y), 2)
+            # Draw right off-road strip
+            if right_w > 0:
+                pygame.draw.line(screen, color, (right_x, y), (SCREEN_WIDTH, y))
 
-        # Sand drift particles near road edges
-        if self._tick % 4 == 0:
-            for _ in range(2):
-                side = random.choice([ROAD_LEFT - 15, ROAD_RIGHT + 15])
-                self._drift_particles.append({
-                    'x': float(side + random.randint(-8, 8)),
-                    'y': float(random.randint(0, SCREEN_HEIGHT)),
-                    'vx': random.uniform(-0.5, 0.5),
-                    'vy': random.uniform(0.3, 1.0),
-                    'life': random.randint(30, 60),
-                })
-
-        alive = []
-        for dp in self._drift_particles:
-            dp['x'] += dp['vx']
-            dp['y'] += dp['vy']
-            dp['life'] -= 1
-            if dp['life'] > 0 and 0 <= dp['y'] < SCREEN_HEIGHT:
-                alpha = min(120, dp['life'] * 4)
-                s = pygame.Surface((3, 3), pygame.SRCALPHA)
-                s.fill((180, 150, 100, alpha))
-                screen.blit(s, (int(dp['x']), int(dp['y'])))
-                alive.append(dp)
-        self._drift_particles = alive
+            # Rumble strips on road shoulder edge (alternating red/white blocks)
+            rumble_band = int((y + offset) / 6) % 2
+            rc = _RUMBLE_A if rumble_band == 0 else _RUMBLE_B
+            # Left rumble
+            pygame.draw.line(screen, rc, (left_w, y), (left_w + 10, y))
+            # Right rumble
+            pygame.draw.line(screen, rc, (right_x - 10, y), (right_x, y))
 
     def _draw_v2(self, speed, screen):
-        """Full V2+ 5-layer parallax render."""
-        # Deep night sky instead of flat desert
+        """Full V2+ 5-layer parallax: sky → stars → mesas → ground strips → road."""
         screen.fill(_V2_SKY)
-
-        # Layer 0: Star Field
         self._draw_stars(screen)
-
-        # Layer 1: Distant Mesas
         self._draw_mesas(screen)
-
-        # Layer 2: Mid Dunes
-        self._draw_dunes(screen)
-
-        # Layer 3: Road Shoulders with rumble strips
-        self._draw_v2_shoulders(screen)
+        self._draw_ground_strips(screen)
 
     def update_and_draw(self, speed, screen, slowmo=False):
         actual_speed = speed * (0.5 if slowmo else 1.0)
