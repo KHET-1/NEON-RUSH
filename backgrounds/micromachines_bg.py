@@ -185,7 +185,8 @@ class MicroMachinesBG:
         bg.draw(screen)
     """
 
-    def __init__(self):
+    def __init__(self, tier=1):
+        self.tier = tier
         # Segment pool and scroll state
         self.segments = []
         self.scroll_offset = 0.0  # total world-y scrolled
@@ -194,6 +195,11 @@ class MicroMachinesBG:
         # Track generation state
         self.current_center_x = SCREEN_WIDTH // 2
         self.next_segment_y = 0.0  # world-y where next segment starts
+
+        # V2+ atmosphere state
+        if tier >= 2:
+            self._haze_phase = 0.0
+            self._tire_marks = self._gen_tire_marks()
 
         # Parallax off-track layers
         self.layer_close = OffTrackLayer(
@@ -234,6 +240,18 @@ class MicroMachinesBG:
 
         # Pre-rendered checkpoint stripe surface
         self.checkpoint_surf = self._make_checkpoint_surface()
+
+    def _gen_tire_marks(self):
+        """Pre-generate tire mark positions for V2+ road surface."""
+        rng = random.Random(88)
+        marks = []
+        for _ in range(15):
+            marks.append((
+                rng.uniform(-0.3, 0.3),   # lateral offset ratio from center
+                rng.randint(30, 80),        # length
+                rng.uniform(-0.2, 0.2),     # angle
+            ))
+        return marks
 
     def _make_checkpoint_surface(self):
         """Create a reusable checkpoint stripe surface."""
@@ -305,6 +323,10 @@ class MicroMachinesBG:
         self.total_distance += scroll_speed
         self.dash_offset = (self.dash_offset + scroll_speed) % (CENTER_DASH_LEN + CENTER_GAP_LEN)
 
+        # V2+ haze animation
+        if self.tier >= 2:
+            self._haze_phase += scroll_speed * 0.005
+
         # Update parallax layers
         self.layer_close.update(scroll_speed)
         self.layer_far.update(scroll_speed)
@@ -329,6 +351,7 @@ class MicroMachinesBG:
           4. Rumble strips on curves
           5. Center dashed line
           6. Checkpoints
+          7. V2+ overlays
         """
         # 1 & 2: Parallax background layers
         self.layer_far.draw(screen)
@@ -337,6 +360,10 @@ class MicroMachinesBG:
         # 3-6: Draw each visible segment
         for seg in self.segments:
             self._draw_segment(screen, seg)
+
+        # 7: V2+ atmosphere overlay
+        if self.tier >= 2:
+            self._draw_v2_overlay(screen)
 
     def _draw_segment(self, screen, seg):
         """Draw a single track segment with all its details."""
@@ -412,3 +439,28 @@ class MicroMachinesBG:
                 cp_left = int(cp_cx - HALF_TRACK - 10)
                 screen.blit(self.checkpoint_surf, (cp_left, int(cp_screen_y) - 4))
             cp_y += CHECKPOINT_INTERVAL
+
+    def _draw_v2_overlay(self, screen):
+        """V2+ visual enhancements: heat haze + tire marks + wider rumble glow."""
+        # Pulsing heat haze overlay
+        haze_alpha = int(12 + 8 * math.sin(self._haze_phase))
+        haze = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        haze.fill((180, 140, 80, haze_alpha))
+        screen.blit(haze, (0, 0))
+
+        # Tire marks on visible road segments
+        mark_color = (35, 33, 30)
+        for seg in self.segments:
+            sy_start = seg.y_start - self.scroll_offset
+            sy_end = seg.y_end - self.scroll_offset
+            if sy_end < 0 or sy_start > SCREEN_HEIGHT:
+                continue
+            for offset_ratio, length, angle in self._tire_marks:
+                local_t = 0.5
+                cx = seg.get_center_x(local_t)
+                mx = int(cx + offset_ratio * HALF_TRACK)
+                my = int((sy_start + sy_end) / 2)
+                if 0 <= my < SCREEN_HEIGHT:
+                    ex = mx + int(math.sin(angle) * length)
+                    ey = my + int(math.cos(angle) * length)
+                    pygame.draw.line(screen, mark_color, (mx, my), (ex, ey), 2)

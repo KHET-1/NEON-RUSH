@@ -1,7 +1,8 @@
 class SharedPlayerState:
     """Carries persistent state between modes. Score/lives/coins survive transitions."""
 
-    def __init__(self, num_players=1, difficulty="normal", ai_config=None, brain_config=None):
+    def __init__(self, num_players=1, difficulty="normal", ai_config=None,
+                 brain_config=None, evolution_tier=1):
         self.num_players = num_players
         self.difficulty = difficulty
         self.ai_config = ai_config or {"ai_players": [], "score_mult": 1}
@@ -13,6 +14,7 @@ class SharedPlayerState:
         self.total_time = 0
         self.bosses_defeated = 0
         self.current_mode = 0  # 0=desert, 1=excitebike, 2=micromachines
+        self.evolution_tier = evolution_tier  # 1=normal, 2=V2, 3=V3...
 
     def snapshot_from_players(self, players):
         """Pull current stats from player objects at end of a mode."""
@@ -35,6 +37,12 @@ class SharedPlayerState:
         """Move to next mode after boss defeat."""
         self.bosses_defeated += 1
         self.current_mode += 1
+
+    def reset_for_cycle(self, new_tier):
+        """Reset mode index for a new evolution cycle, keeping scores/lives."""
+        self.current_mode = 0
+        self.evolution_tier = new_tier
+        # Don't reset bosses_defeated — it accumulates across cycles
 
     @property
     def best_score(self):

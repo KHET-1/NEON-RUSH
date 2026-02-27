@@ -57,6 +57,7 @@ def main():
     from ai.brain import MODE_BRAIN_NAMES
     from ai.controller import BrainController
     from ai.dashboard import LearningDashboard
+    from core.evolution import EvolutionManager
 
     init_fonts()
     init_sounds()
@@ -79,6 +80,7 @@ def main():
         MODE_MICROMACHINES: BrainPool(MODE_MICROMACHINES),
     }
     dashboard = LearningDashboard(brain_pools)
+    evolution_mgr = EvolutionManager()
     # Track active brains per player index for result reporting
     active_brains = {}  # player_idx -> brain
 
@@ -107,6 +109,7 @@ def main():
     def start_game(num_players, ai_config=None):
         nonlocal shared_state, current_mode, had_ai_players, continues_left
         particles.clear()
+        evolution_mgr.start_run()
 
         # Assign brains from pool for AI players if dashboard enabled
         brain_config = {"use_brains": dashboard.enabled, "brain_map": {}}
@@ -120,7 +123,8 @@ def main():
                     active_brains[pidx] = brain
 
         shared_state = SharedPlayerState(num_players, selected_diff, ai_config,
-                                         brain_config=brain_config)
+                                         brain_config=brain_config,
+                                         evolution_tier=evolution_mgr.current_tier)
         current_mode = MODE_CLASSES[0](particles, shake, shared_state)
         current_mode.setup()
         fps_mon.start_tracking()
@@ -182,10 +186,30 @@ def main():
 
         mode_idx = shared_state.current_mode
         if mode_idx >= len(MODE_CLASSES):
-            # All modes complete
-            state = STATE_VICTORY
-            SFX["victory"].play()
-            return
+            if evolution_mgr.enabled:
+                # CYCLE: advance tier, reset to desert
+                new_tier = evolution_mgr.advance_cycle()
+                shared_state.reset_for_cycle(new_tier)
+                mode_idx = 0
+
+                # Brief evolution celebration transition
+                from_surface = screen.copy()
+                if current_mode:
+                    current_mode.cleanup()
+                transition = TransitionEffect(
+                    'glitch', f"EVOLUTION V{new_tier}!", from_surface,
+                    evolution_tier=new_tier)
+                session.update_transition('glitch', f"EVOLUTION V{new_tier}!")
+                _assign_brains_for_mode(0)
+                current_mode = MODE_CLASSES[0](particles, shake, shared_state)
+                state = STATE_TRANSITION
+                SFX["evolve"].play()
+                return
+            else:
+                # Normal victory — all modes complete
+                state = STATE_VICTORY
+                SFX["victory"].play()
+                return
 
         # Assign brains for next mode
         _assign_brains_for_mode(mode_idx)
@@ -199,7 +223,8 @@ def main():
         styles = ['zoom_rotate', 'scanline', 'glitch']
         style = styles[min(mode_idx, len(styles) - 1)]
         mode_name = MODE_NAMES[mode_idx] if mode_idx < len(MODE_NAMES) else "???"
-        transition = TransitionEffect(style, mode_name, from_surface)
+        transition = TransitionEffect(style, mode_name, from_surface,
+                                      evolution_tier=shared_state.evolution_tier)
         session.update_transition(style, mode_name)
         state = STATE_TRANSITION
 
@@ -280,6 +305,9 @@ def main():
                         target_fps = FPS_CAPS[max(0, idx - 1)]
                         fps_mon.target_fps = target_fps
                         SFX["select"].play()
+                    elif event.key == pygame.K_e:
+                        evolution_mgr.enabled = not evolution_mgr.enabled
+                        SFX["select"].play()
                     elif event.key == pygame.K_ESCAPE:
                         running = False
 
@@ -358,7 +386,8 @@ def main():
         if state == STATE_TITLE:
             draw_title(screen, tick, selected_diff, ai_reward_mult,
                        loop_count=tick, ai_frames=ai_total_frames,
-                       target_fps=target_fps, dashboard=dashboard)
+                       target_fps=target_fps, dashboard=dashboard,
+                       evolution_mgr=evolution_mgr)
 
         elif state == STATE_PLAY:
             if current_mode:

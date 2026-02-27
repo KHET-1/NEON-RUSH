@@ -505,8 +505,10 @@ class MicroMachinesBoss(Boss):
     PATH_MARGIN = 50
     PATH_CORNER_RADIUS = 80
 
-    def __init__(self, particles, shake=None):
+    def __init__(self, particles, shake=None, evolution_tier=1):
         self.shake = shake
+        evo_scale = 1.0 + (evolution_tier - 1) * 0.3
+        self.MAX_HP = int(350 * evo_scale)
         self.path_t = 0.0  # parametric position along path [0..1)
         self.path_speed = 0.003  # base speed around path
         self.facing_angle = 0.0

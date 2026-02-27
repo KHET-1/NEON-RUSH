@@ -294,11 +294,12 @@ class DesertBoss(Boss):
     RAM_DAMAGE = 25
     ENVIRONMENTAL_DAMAGE = 50
 
-    def __init__(self, particles, difficulty=DIFF_NORMAL):
+    def __init__(self, particles, difficulty=DIFF_NORMAL, evolution_tier=1):
         self._difficulty = difficulty
         self._diff_s = DIFFICULTY_SETTINGS.get(difficulty, DIFFICULTY_SETTINGS[DIFF_NORMAL])
         # Scale HP before super().__init__ reads it
-        self.MAX_HP = int(300 * self._diff_s.get("boss_hp_mult", 1.0))
+        evo_scale = 1.0 + (evolution_tier - 1) * 0.3
+        self.MAX_HP = int(300 * self._diff_s.get("boss_hp_mult", 1.0) * evo_scale)
         super().__init__(ROAD_CENTER, 80, particles)
         self.move_dir = 1
         self.move_speed = 1.5

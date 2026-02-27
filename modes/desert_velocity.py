@@ -37,7 +37,7 @@ class DesertVelocityMode(GameMode):
 
     def __init__(self, particles, shake, shared_state):
         super().__init__(particles, shake, shared_state)
-        self.bg = Background(particles)
+        self.bg = Background(particles, tier=shared_state.evolution_tier)
         self.obstacles = pygame.sprite.Group()
         self.coins_group = pygame.sprite.Group()
         self.powerups_group = pygame.sprite.Group()
@@ -446,7 +446,8 @@ class DesertVelocityMode(GameMode):
         # Check boss trigger
         if self.check_boss_trigger():
             self.start_boss_phase()
-            self.boss = DesertBoss(self.particles, self.difficulty)
+            self.boss = DesertBoss(self.particles, self.difficulty,
+                                   evolution_tier=self.shared_state.evolution_tier)
             self.boss_active = True
             self.all_sprites.add(self.boss)
             SFX["boss_warning"].play()

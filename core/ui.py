@@ -177,7 +177,8 @@ class HighScoreEntry:
 
 
 def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
-               loop_count=0, ai_frames=0, target_fps=144, dashboard=None):
+               loop_count=0, ai_frames=0, target_fps=144, dashboard=None,
+               evolution_mgr=None):
     from core.fonts import FONT_TITLE, FONT_SUBTITLE, FONT_HUD, FONT_HUD_SM, FONT_HUD_SM_BOLD
 
     t = (tick % 180) / 180
@@ -269,11 +270,23 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
     fps_hint = FONT_HUD_SM.render("(UP/DOWN)", True, (100, 100, 120))
     screen.blit(fps_hint, (cx + fps_val_t.get_width() // 2 + 6, fps_y))
 
+    # Evolution toggle row
+    if evolution_mgr is not None:
+        evo_y = 348
+        evo_state = "ON" if evolution_mgr.enabled else "OFF"
+        evo_color = SOLAR_YELLOW if evolution_mgr.enabled else (80, 80, 100)
+        evo_font = FONT_HUD_SM_BOLD if evolution_mgr.enabled else FONT_HUD_SM
+        evo_text = f"[E] Evolution: {evo_state}"
+        if evolution_mgr.max_tier > 1:
+            evo_text += f"  (Max: V{evolution_mgr.max_tier})"
+        et = evo_font.render(evo_text, True, evo_color)
+        screen.blit(et, (cx - et.get_width() // 2, evo_y))
+
     # Controls hints (condensed)
     c1 = FONT_HUD_SM.render("P1: WASD + Shift   Solo: WASD/Arrows   P2: Arrows + R.Shift", True, (120, 120, 140))
-    screen.blit(c1, (cx - c1.get_width() // 2, 365))
-    c0 = FONT_HUD_SM.render("Double-tap < or > = Leap   E/Enter = Heat bolt   P = Pause", True, SLOWMO_GREEN)
-    screen.blit(c0, (cx - c0.get_width() // 2, 383))
+    screen.blit(c1, (cx - c1.get_width() // 2, 370))
+    c0 = FONT_HUD_SM.render("Double-tap < or > = Leap   Enter = Heat bolt   P = Pause", True, SLOWMO_GREEN)
+    screen.blit(c0, (cx - c0.get_width() // 2, 388))
 
     # Dashboard or High scores
     if dashboard and dashboard.active:

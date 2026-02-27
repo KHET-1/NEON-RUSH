@@ -37,7 +37,7 @@ class MicroMachinesMode(GameMode):
 
     def __init__(self, particles, shake, shared_state):
         super().__init__(particles, shake, shared_state)
-        self.bg = MicroMachinesBG()
+        self.bg = MicroMachinesBG(tier=shared_state.evolution_tier)
         self.obstacles = pygame.sprite.Group()
         self.oil_slicks = pygame.sprite.Group()
         self.tiny_cars = pygame.sprite.Group()
@@ -397,7 +397,8 @@ class MicroMachinesMode(GameMode):
         # Check boss trigger
         if self.check_boss_trigger():
             self.start_boss_phase()
-            self.boss = MicroMachinesBoss(self.particles, shake=self.shake)
+            self.boss = MicroMachinesBoss(self.particles, shake=self.shake,
+                                         evolution_tier=self.shared_state.evolution_tier)
             self.boss_active = True
             self.all_sprites.add(self.boss)
             SFX["boss_warning"].play()

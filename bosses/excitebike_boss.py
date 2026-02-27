@@ -424,11 +424,13 @@ class ExcitebikeBoss(Boss):
     RAM_DAMAGE = 25
     ENVIRONMENTAL_DAMAGE = 50
 
-    def __init__(self, particles, shake=None):
+    def __init__(self, particles, shake=None, evolution_tier=1):
         self.shake = shake
         self.bob_offset = 0.0
         self.base_y = 200
         self.base_x = 650
+        evo_scale = 1.0 + (evolution_tier - 1) * 0.3
+        self.MAX_HP = int(300 * evo_scale)
         self.wheel_angle = 0.0
         self.exhaust_timer = 0
         self.ramps = pygame.sprite.Group()

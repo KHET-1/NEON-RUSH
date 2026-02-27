@@ -1,5 +1,6 @@
 import pygame
 import random
+import math
 
 from core.constants import (
     SCREEN_WIDTH, SCREEN_HEIGHT, NEON_CYAN, NEON_MAGENTA,
@@ -10,10 +11,78 @@ from core.constants import (
 
 
 class Background:
-    def __init__(self, particles):
+    def __init__(self, particles, tier=1):
         self.scroll_y = 0.0
         self.particles = particles
         self.sand_timer = 0
+        self.tier = tier
+
+        # V2+ layers
+        if tier >= 2:
+            self._stars = self._gen_stars()
+            self._mesas = self._gen_mesas()
+            self._dune_phase = 0.0
+
+    def _gen_stars(self):
+        """Random star field for V2+ night sky."""
+        rng = random.Random(77)
+        stars = []
+        for _ in range(30):
+            stars.append((
+                rng.randint(0, SCREEN_WIDTH),
+                rng.randint(5, 120),
+                rng.randint(1, 2),
+                rng.randint(160, 255),
+            ))
+        return stars
+
+    def _gen_mesas(self):
+        """Mesa silhouettes for V2+ desert horizon."""
+        rng = random.Random(33)
+        mesas = []
+        x = -50
+        while x < SCREEN_WIDTH + 200:
+            w = rng.randint(80, 160)
+            h = rng.randint(40, 90)
+            flat_top = rng.randint(30, w - 20)
+            mesas.append((x, h, w, flat_top))
+            x += w + rng.randint(30, 80)
+        return mesas
+
+    def _draw_v2_layers(self, screen, speed):
+        """Draw V2+ background layers before road."""
+        # Stars — tiny dots, very slow parallax
+        star_offset = int(self.scroll_y * 0.02) % 200
+        for sx, sy, sz, brightness in self._stars:
+            dy = (sy + star_offset) % 140
+            twinkle = brightness + int(20 * math.sin(self.scroll_y * 0.01 + sx))
+            twinkle = max(100, min(255, twinkle))
+            pygame.draw.circle(screen, (twinkle, twinkle, twinkle - 30), (sx, dy), sz)
+
+        # Mesa silhouettes — dark shapes at horizon (0.1x parallax)
+        mesa_scroll = int(self.scroll_y * 0.05) % 300
+        mesa_base_y = 130
+        mesa_color = (40, 25, 50)
+        for mx, mh, mw, flat in self._mesas:
+            sx = mx - mesa_scroll
+            if sx + mw < -50 or sx > SCREEN_WIDTH + 50:
+                continue
+            points = [
+                (sx, mesa_base_y),
+                (sx + (mw - flat) // 3, mesa_base_y - mh),
+                (sx + (mw - flat) // 3 + flat, mesa_base_y - mh),
+                (sx + mw, mesa_base_y),
+            ]
+            pygame.draw.polygon(screen, mesa_color, points)
+
+        # Dune parallax — sine-wave sand dunes at road edges (0.6x)
+        self._dune_phase += speed * 0.003
+        dune_color = (120, 90, 50)
+        for side_x in [ROAD_LEFT - 60, ROAD_RIGHT + 10]:
+            for y in range(140, SCREEN_HEIGHT, 3):
+                wave = int(15 * math.sin(y * 0.02 + self._dune_phase))
+                dx = side_x + wave
+                pygame.draw.line(screen, dune_color, (dx, y), (dx + 40, y), 2)
 
     def update_and_draw(self, speed, screen, slowmo=False):
         actual_speed = speed * (0.5 if slowmo else 1.0)
@@ -21,6 +90,11 @@ class Background:
         dash_period = DASH_LENGTH + DASH_GAP
 
         screen.fill(DESERT_BG)
+
+        # V2+ layers drawn before road
+        if self.tier >= 2:
+            self._draw_v2_layers(screen, actual_speed)
+
         pygame.draw.rect(screen, ROAD_SHOULDER, (ROAD_LEFT - 24, 0, ROAD_WIDTH + 48, SCREEN_HEIGHT))
         pygame.draw.rect(screen, ROAD_COLOR, (ROAD_LEFT, 0, ROAD_WIDTH, SCREEN_HEIGHT))
         pygame.draw.line(screen, (20, 120, 150), (ROAD_LEFT, 0), (ROAD_LEFT, SCREEN_HEIGHT), 4)

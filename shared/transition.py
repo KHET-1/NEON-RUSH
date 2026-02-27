@@ -23,9 +23,10 @@ class TransitionEffect:
 
     DURATION = 180  # 3 seconds at 60fps
 
-    def __init__(self, style, mode_name, from_surface=None):
+    def __init__(self, style, mode_name, from_surface=None, evolution_tier=1):
         self.style = style
         self.mode_name = mode_name
+        self.evolution_tier = evolution_tier
         self.from_surface = from_surface.copy() if from_surface else pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
         self.timer = 0
         self.done = False
@@ -95,6 +96,15 @@ class TransitionEffect:
             txt.set_alpha(alpha)
             screen.blit(txt, (SCREEN_WIDTH // 2 - txt.get_width() // 2,
                               SCREEN_HEIGHT // 2 - txt.get_height() // 2))
+
+            # Tier badge above mode name (V2, V3, etc.)
+            if self.evolution_tier > 1:
+                badge_font = load_font("freesans", int(28 * scale), bold=True)
+                badge_text = f"V{self.evolution_tier}"
+                badge_surf = badge_font.render(badge_text, True, SOLAR_YELLOW)
+                badge_surf.set_alpha(alpha)
+                screen.blit(badge_surf, (SCREEN_WIDTH // 2 - badge_surf.get_width() // 2,
+                                         SCREEN_HEIGHT // 2 - txt.get_height() // 2 - 35))
 
     def _draw_zoom_rotate(self, screen, t):
         """Zoom-rotate: camera swings from vertical to side view."""

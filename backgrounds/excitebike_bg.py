@@ -25,12 +25,18 @@ class ExcitebikeBg:
     LANE_HEIGHT = 55
     GROUND_Y = 310  # Where ground/road starts
 
-    def __init__(self):
+    def __init__(self, tier=1):
         self.scroll_x = 0.0
         self.mountain_scroll = 0.0
+        self.tier = tier
         # Pre-generate mountain silhouettes
         self.mountains_far = self._gen_mountains(20, 80, 150, seed=42)
         self.mountains_near = self._gen_mountains(15, 100, 200, seed=99)
+
+        # V2+ layers
+        if tier >= 2:
+            self.mountains_deep = self._gen_mountains(25, 40, 90, seed=7)
+            self._grass_tufts = self._gen_grass_tufts()
 
     def _gen_mountains(self, num_peaks, min_h, max_h, seed=0):
         rng = random.Random(seed)
@@ -42,6 +48,19 @@ class ExcitebikeBg:
             points.append((x, h, w))
             x += w * 0.7
         return points
+
+    def _gen_grass_tufts(self):
+        """Small grass triangle positions for V2+."""
+        rng = random.Random(55)
+        tufts = []
+        for _ in range(40):
+            tufts.append((
+                rng.randint(0, SCREEN_WIDTH),
+                rng.randint(-10, 5),  # offset from terrain line
+                rng.randint(3, 7),    # height
+                rng.choice([(50, 110, 35), (35, 80, 25), (60, 100, 30)]),
+            ))
+        return tufts
 
     def get_hill_y(self, x):
         """Get ground height at position x (for physics)."""
@@ -71,6 +90,12 @@ class ExcitebikeBg:
             b = int(SKY_TOP[2] + (SKY_BOTTOM[2] - SKY_TOP[2]) * t)
             pygame.draw.line(screen, (r, g, b), (0, y), (SCREEN_WIDTH, y))
 
+        # V2+: Deep mountain layer (slowest parallax)
+        if self.tier >= 2:
+            MOUNTAIN_DEEP = (35, 22, 50)
+            self._draw_mountains(screen, self.mountains_deep, MOUNTAIN_DEEP,
+                                 self.mountain_scroll * 0.2, 220)
+
         # Far mountains (parallax 0.2x)
         self._draw_mountains(screen, self.mountains_far, MOUNTAIN_FAR,
                              self.mountain_scroll * 0.4, 180)
@@ -85,8 +110,30 @@ class ExcitebikeBg:
         # Draw terrain hills
         self._draw_terrain(screen)
 
+        # V2+: Grass tufts along terrain line
+        if self.tier >= 2:
+            tuft_offset = int(self.scroll_x * 0.6) % SCREEN_WIDTH
+            for tx, ty_off, th, tc in self._grass_tufts:
+                sx = (tx - tuft_offset) % SCREEN_WIDTH
+                base_y = self.get_hill_y(sx)
+                tip_y = int(base_y) + ty_off - th
+                pygame.draw.polygon(screen, tc, [
+                    (sx - 3, int(base_y) + ty_off),
+                    (sx, tip_y),
+                    (sx + 3, int(base_y) + ty_off),
+                ])
+
         # Draw lanes
         self._draw_lanes(screen)
+
+        # V2+: Neon glow on lane edges
+        if self.tier >= 2:
+            glow_surf = pygame.Surface((SCREEN_WIDTH, 4), pygame.SRCALPHA)
+            glow_alpha = int(40 + 20 * math.sin(self.scroll_x * 0.01))
+            glow_surf.fill((*NEON_CYAN[:3], glow_alpha))
+            for ly in self.LANE_Y:
+                screen.blit(glow_surf, (0, ly - 2))
+                screen.blit(glow_surf, (0, ly + self.LANE_HEIGHT - 2))
 
     def _draw_mountains(self, screen, peaks, color, scroll, base_y):
         offset = int(scroll) % (SCREEN_WIDTH * 3)

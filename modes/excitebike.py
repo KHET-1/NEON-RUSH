@@ -38,7 +38,7 @@ class ExcitebikeMode(GameMode):
 
     def __init__(self, particles, shake, shared_state):
         super().__init__(particles, shake, shared_state)
-        self.bg = ExcitebikeBg()
+        self.bg = ExcitebikeBg(tier=shared_state.evolution_tier)
         self.barriers = pygame.sprite.Group()
         self.ramps = pygame.sprite.Group()
         self.mud_patches = pygame.sprite.Group()
@@ -449,7 +449,8 @@ class ExcitebikeMode(GameMode):
         # Check boss trigger
         if self.check_boss_trigger():
             self.start_boss_phase()
-            self.boss = ExcitebikeBoss(self.particles, shake=self.shake)
+            self.boss = ExcitebikeBoss(self.particles, shake=self.shake,
+                                       evolution_tier=self.shared_state.evolution_tier)
             self.boss_active = True
             self.all_sprites.add(self.boss)
             SFX["boss_warning"].play()
