@@ -7,6 +7,8 @@ import pygame
 import sys
 import os
 import math
+import time
+import random
 import logging
 
 # Ensure package imports work
@@ -21,7 +23,12 @@ from core.constants import (
     STATE_HIGHSCORE, STATE_TRANSITION, STATE_VICTORY,
     DIFF_EASY, DIFF_NORMAL, DIFF_HARD, DIFFICULTY_SETTINGS,
     MODE_DESERT, MODE_EXCITEBIKE, MODE_MICROMACHINES, MODE_NAMES,
+    ROAD_LEFT, ROAD_RIGHT,
 )
+
+# Anti-camping: nudge players who sit still too long
+CAMP_RADIUS = 15    # pixels — movement less than this counts as "stationary"
+CAMP_TIME = 5.0     # seconds before nudge triggers
 
 
 def _init_pygame():
@@ -39,13 +46,17 @@ def main():
     from core.shake import ScreenShake
     from core.highscores import is_highscore
     from core.ui import draw_title, draw_paused, draw_gameover, HighScoreEntry
-    from core.hud import draw_panel
+    from core.hud import draw_panel, draw_ai_badges
     from core.fps_monitor import FPSMonitor
     from shared.player_state import SharedPlayerState
     from shared.transition import TransitionEffect
     from modes.desert_velocity import DesertVelocityMode
     from modes.excitebike import ExcitebikeMode
     from modes.micromachines import MicroMachinesMode
+    from ai.brain_pool import BrainPool
+    from ai.brain import MODE_BRAIN_NAMES
+    from ai.controller import BrainController
+    from ai.dashboard import LearningDashboard
 
     init_fonts()
     init_sounds()
@@ -61,6 +72,16 @@ def main():
     # Session tracking
     session.start()
 
+    # Brain pools (one per mode) + dashboard
+    brain_pools = {
+        MODE_DESERT: BrainPool(MODE_DESERT),
+        MODE_EXCITEBIKE: BrainPool(MODE_EXCITEBIKE),
+        MODE_MICROMACHINES: BrainPool(MODE_MICROMACHINES),
+    }
+    dashboard = LearningDashboard(brain_pools)
+    # Track active brains per player index for result reporting
+    active_brains = {}  # player_idx -> brain
+
     # Game state
     state = STATE_TITLE
     selected_diff = DIFF_NORMAL
@@ -68,6 +89,12 @@ def main():
     tick = 0
     ai_total_frames = 0
     highscore_entry = None
+    target_fps = FPS
+    FPS_CAPS = [30, 60, 120, 144, 0]
+    last_input_time = time.monotonic()
+    had_ai_players = False
+    continues_left = 3
+    camp_anchors = {}  # id(player) -> (anchor_x, anchor_y, start_time)
 
     # Mode system
     shared_state = None
@@ -78,20 +105,90 @@ def main():
     DIFF_LIST = [DIFF_EASY, DIFF_NORMAL, DIFF_HARD]
 
     def start_game(num_players, ai_config=None):
-        nonlocal shared_state, current_mode
+        nonlocal shared_state, current_mode, had_ai_players, continues_left
         particles.clear()
-        shared_state = SharedPlayerState(num_players, selected_diff, ai_config)
+
+        # Assign brains from pool for AI players if dashboard enabled
+        brain_config = {"use_brains": dashboard.enabled, "brain_map": {}}
+        active_brains.clear()
+        if dashboard.enabled and ai_config and ai_config.get("ai_players"):
+            pool = brain_pools.get(MODE_DESERT)
+            if pool:
+                for pidx in ai_config["ai_players"]:
+                    brain = pool.pick_brain()
+                    brain_config["brain_map"][pidx] = brain
+                    active_brains[pidx] = brain
+
+        shared_state = SharedPlayerState(num_players, selected_diff, ai_config,
+                                         brain_config=brain_config)
         current_mode = MODE_CLASSES[0](particles, shake, shared_state)
         current_mode.setup()
+        fps_mon.start_tracking()
+        fps_mon.target_fps = target_fps
+        had_ai_players = bool(ai_config and ai_config.get("ai_players"))
+        continues_left = 3
+        camp_anchors.clear()
+
+    def _report_brain_results():
+        """Report results for any active brains to their pools."""
+        if not active_brains or not current_mode:
+            return
+        prev_mode_idx = shared_state.current_mode - 1  # already advanced
+        if prev_mode_idx < 0:
+            prev_mode_idx = 0
+        pool = brain_pools.get(prev_mode_idx)
+        if not pool:
+            return
+        for pidx, brain in active_brains.items():
+            if pidx < len(current_mode.players):
+                score = current_mode.players[pidx].score
+            elif shared_state:
+                score = shared_state.scores[pidx] if pidx < len(shared_state.scores) else 0
+            else:
+                score = 0
+            pool.report_result(brain.id, score)
+
+    def _assign_brains_for_mode(mode_idx):
+        """Pick brains from the mode's pool and update brain_config."""
+        active_brains.clear()
+        if not dashboard.enabled or not shared_state:
+            return
+        ai_players = shared_state.ai_config.get("ai_players", [])
+        if not ai_players:
+            return
+        pool = brain_pools.get(mode_idx)
+        if not pool:
+            return
+        brain_map = {}
+        for pidx in ai_players:
+            brain = pool.pick_brain()
+            brain_map[pidx] = brain
+            active_brains[pidx] = brain
+        shared_state.brain_config["brain_map"] = brain_map
 
     def advance_to_next_mode():
         nonlocal current_mode, transition, state
+
+        # Report results for brains in the mode that just ended
+        if dashboard.enabled and active_brains and current_mode:
+            cur_mode_idx = shared_state.current_mode - 1
+            pool = brain_pools.get(max(0, cur_mode_idx))
+            if pool:
+                for pidx, brain in active_brains.items():
+                    score = 0
+                    if pidx < len(current_mode.players):
+                        score = current_mode.players[pidx].score
+                    pool.report_result(brain.id, score)
+
         mode_idx = shared_state.current_mode
         if mode_idx >= len(MODE_CLASSES):
             # All modes complete
             state = STATE_VICTORY
             SFX["victory"].play()
             return
+
+        # Assign brains for next mode
+        _assign_brains_for_mode(mode_idx)
 
         # Capture current screen for transition
         from_surface = screen.copy()
@@ -115,7 +212,11 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
 
+            if event.type == pygame.MOUSEBUTTONDOWN and state == STATE_TITLE:
+                dashboard.handle_click(event.pos)
+
             if event.type == pygame.KEYDOWN:
+                last_input_time = time.monotonic()
                 # Global keys
                 if event.key == pygame.K_F11:
                     disp.toggle_fullscreen()
@@ -123,7 +224,10 @@ def main():
                     disp.toggle_scale()
 
                 if state == STATE_TITLE:
-                    if event.key in (pygame.K_1, pygame.K_KP1, pygame.K_SPACE):
+                    # Dashboard handles its own keys first
+                    if dashboard.handle_key(event):
+                        pass
+                    elif event.key in (pygame.K_1, pygame.K_KP1, pygame.K_SPACE):
                         start_game(1)
                         state = STATE_PLAY
                         SFX["select"].play()
@@ -166,6 +270,16 @@ def main():
                     elif event.key in (pygame.K_8, pygame.K_KP8):
                         ai_reward_mult = 1 if ai_reward_mult == 8 else 8
                         SFX["select"].play()
+                    elif event.key == pygame.K_UP:
+                        idx = FPS_CAPS.index(target_fps) if target_fps in FPS_CAPS else 1
+                        target_fps = FPS_CAPS[min(len(FPS_CAPS) - 1, idx + 1)]
+                        fps_mon.target_fps = target_fps
+                        SFX["select"].play()
+                    elif event.key == pygame.K_DOWN:
+                        idx = FPS_CAPS.index(target_fps) if target_fps in FPS_CAPS else 1
+                        target_fps = FPS_CAPS[max(0, idx - 1)]
+                        fps_mon.target_fps = target_fps
+                        SFX["select"].play()
                     elif event.key == pygame.K_ESCAPE:
                         running = False
 
@@ -195,12 +309,24 @@ def main():
 
                 elif state == STATE_GAMEOVER:
                     if event.key == pygame.K_SPACE:
-                        best = shared_state.best_score if shared_state else 0
-                        if is_highscore(best):
-                            highscore_entry = HighScoreEntry(best)
-                            state = STATE_HIGHSCORE
+                        if continues_left > 0 and current_mode:
+                            # Continue from same spot
+                            continues_left -= 1
+                            for p in current_mode.players:
+                                p.lives = 1
+                                p.alive = True
+                                p.shield = 120  # brief invuln
+                            state = STATE_PLAY
+                            SFX["select"].play()
                         else:
-                            state = STATE_TITLE
+                            # Hard game over — highscore or title
+                            best = shared_state.best_score if shared_state else 0
+                            if is_highscore(best):
+                                highscore_entry = HighScoreEntry(
+                                    best, auto_type=had_ai_players)
+                                state = STATE_HIGHSCORE
+                            else:
+                                state = STATE_TITLE
                     elif event.key == pygame.K_ESCAPE:
                         running = False
 
@@ -218,7 +344,8 @@ def main():
                     if event.key in (pygame.K_SPACE, pygame.K_RETURN):
                         best = shared_state.best_score if shared_state else 0
                         if is_highscore(best):
-                            highscore_entry = HighScoreEntry(best)
+                            highscore_entry = HighScoreEntry(
+                                best, auto_type=had_ai_players)
                             state = STATE_HIGHSCORE
                         else:
                             state = STATE_TITLE
@@ -230,20 +357,79 @@ def main():
         # === State updates ===
         if state == STATE_TITLE:
             draw_title(screen, tick, selected_diff, ai_reward_mult,
-                       loop_count=tick, ai_frames=ai_total_frames)
+                       loop_count=tick, ai_frames=ai_total_frames,
+                       target_fps=target_fps, dashboard=dashboard)
 
         elif state == STATE_PLAY:
             if current_mode:
                 result = current_mode.update(keys)
                 current_mode.draw(screen)
-                # Accumulate AI learner frames
+                # AI badges
                 if hasattr(current_mode, 'ai_controllers'):
+                    draw_ai_badges(screen, current_mode.ai_controllers)
                     ai_total_frames += len(current_mode.ai_controllers)
+                # FPS tracking
+                fps_mon.record_frame()
+
+                # Anti-camping: nudge players who park in one spot > 5s
+                now_camp = time.monotonic()
+                for p in current_mode.players:
+                    pid = id(p)
+                    if not p.alive:
+                        camp_anchors.pop(pid, None)
+                        continue
+                    cx, cy = p.rect.center
+                    if pid in camp_anchors:
+                        ax, ay, start = camp_anchors[pid]
+                        dist_sq = (cx - ax) ** 2 + (cy - ay) ** 2
+                        if dist_sq > CAMP_RADIUS ** 2:
+                            camp_anchors[pid] = (cx, cy, now_camp)
+                        elif now_camp - start > CAMP_TIME:
+                            # Camping detected — fake damage nudge
+                            shake.trigger(6, 15)
+                            p.invincible_timer = max(
+                                getattr(p, 'invincible_timer', 0), 30)
+                            nudge = random.choice([-45, 45])
+                            if hasattr(p, 'px'):
+                                # Micro Machines — nudge float coords
+                                p.px += nudge
+                                p.py += random.choice([-35, 35])
+                                p.px = max(20, min(SCREEN_WIDTH - 20, p.px))
+                                p.py = max(20, min(SCREEN_HEIGHT - 20, p.py))
+                            elif hasattr(p, 'target_lane'):
+                                # Excitebike — force lane change
+                                if p.lane <= 0:
+                                    p.target_lane = 1
+                                elif p.lane >= 2:
+                                    p.target_lane = 1
+                                else:
+                                    p.target_lane = random.choice([0, 2])
+                            else:
+                                # Desert Velocity — horizontal shove
+                                p.rect.x += nudge
+                                p.rect.x = max(
+                                    ROAD_LEFT + 5,
+                                    min(ROAD_RIGHT - p.rect.width - 5,
+                                        p.rect.x))
+                            camp_anchors[pid] = (
+                                p.rect.centerx, p.rect.centery, now_camp)
+                    else:
+                        camp_anchors[pid] = (cx, cy, now_camp)
 
                 if result == 'gameover':
                     state = STATE_GAMEOVER
                     if current_mode:
                         shared_state.snapshot_from_players(current_mode.players)
+                    # Report brain results on game over
+                    if dashboard.enabled and active_brains:
+                        mode_idx = shared_state.current_mode if shared_state else 0
+                        pool = brain_pools.get(mode_idx)
+                        if pool:
+                            for pidx, brain in active_brains.items():
+                                score = 0
+                                if current_mode and pidx < len(current_mode.players):
+                                    score = current_mode.players[pidx].score
+                                pool.report_result(brain.id, score)
                 elif result == 'boss_defeated':
                     advance_to_next_mode()
 
@@ -259,7 +445,11 @@ def main():
             players = current_mode.players if current_mode else []
             dist = current_mode.game_distance if current_mode else 0
             two_p = shared_state.num_players == 2 if shared_state else False
-            draw_gameover(screen, players, dist, tick, two_p)
+            snaps = fps_mon.get_snapshots() if continues_left <= 0 else None
+            total_f = fps_mon.get_total_frames() if continues_left <= 0 else 0
+            draw_gameover(screen, players, dist, tick, two_p,
+                          fps_snapshots=snaps, fps_total_frames=total_f,
+                          continues_left=continues_left)
 
         elif state == STATE_HIGHSCORE:
             if highscore_entry:
@@ -278,6 +468,49 @@ def main():
 
         elif state == STATE_VICTORY:
             _draw_victory(screen, shared_state, tick)
+
+        # === Idle auto-actions (15s with no human input) ===
+        idle_secs = time.monotonic() - last_input_time
+        if idle_secs > 15.0:
+            if state == STATE_GAMEOVER:
+                # Auto-press SPACE (continue or end)
+                if continues_left > 0 and current_mode:
+                    continues_left -= 1
+                    for p in current_mode.players:
+                        p.lives = 1
+                        p.alive = True
+                        p.shield = 120
+                    state = STATE_PLAY
+                else:
+                    best = shared_state.best_score if shared_state else 0
+                    if is_highscore(best):
+                        highscore_entry = HighScoreEntry(
+                            best, auto_type=True)
+                        state = STATE_HIGHSCORE
+                    else:
+                        state = STATE_TITLE
+                last_input_time = time.monotonic()
+            elif state == STATE_VICTORY:
+                best = shared_state.best_score if shared_state else 0
+                if is_highscore(best):
+                    highscore_entry = HighScoreEntry(
+                        best, auto_type=True)
+                    state = STATE_HIGHSCORE
+                else:
+                    state = STATE_TITLE
+                last_input_time = time.monotonic()
+            elif state == STATE_TITLE:
+                # Auto-start AI Solo
+                ai_cfg = {"ai_players": [0], "score_mult": ai_reward_mult}
+                start_game(1, ai_cfg)
+                state = STATE_PLAY
+                last_input_time = time.monotonic()
+
+        # === Auto-complete highscore entry (AI auto-type finishes) ===
+        if state == STATE_HIGHSCORE and highscore_entry and highscore_entry.done:
+            state = STATE_TITLE
+            highscore_entry = None
+            last_input_time = time.monotonic()
 
         # === FPS monitoring (gameplay only) ===
         fps_mon.update(state == STATE_PLAY)
@@ -314,7 +547,7 @@ def main():
         session.update(state=state, shared_state=shared_state, current_mode=current_mode, tick=tick)
 
         pygame.display.flip()
-        clock.tick(FPS)
+        clock.tick(target_fps if target_fps > 0 else 0)
         tick += 1
 
     pygame.quit()

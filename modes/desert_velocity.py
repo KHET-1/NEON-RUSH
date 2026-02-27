@@ -22,7 +22,7 @@ from sprites.vehicle import Player
 from sprites.desert_sprites import Obstacle, Coin, PowerUp, SolarFlare
 from backgrounds.desert_bg import Background
 from bosses.desert_boss import DesertBoss
-from ai.controller import AIController
+from ai.controller import AIController, BrainController
 
 
 class DesertVelocityMode(GameMode):
@@ -74,20 +74,35 @@ class DesertVelocityMode(GameMode):
         ai_cfg = self.shared_state.ai_config
         ai_indices = ai_cfg.get("ai_players", [])
         score_mult = ai_cfg.get("score_mult", 1)
+        use_brains = self.shared_state.brain_config.get("use_brains", False)
+        brain_map = self.shared_state.brain_config.get("brain_map", {})
         self.ai_controllers = []
         for idx in ai_indices:
             if idx < len(self.players):
                 p = self.players[idx]
                 p.is_ai = True
                 p.score_mult = score_mult
-                p.color_main = AIController.COLOR_MAIN
-                p.color_accent = AIController.COLOR_ACCENT
-                from sprites.vehicle import make_vehicle_surface
-                p.base_image = make_vehicle_surface(p.color_main, p.color_accent)
-                p.ghost_image = make_vehicle_surface(p.color_main, p.color_accent, True)
-                p.image = p.base_image.copy()
-                p.name = f"AI{idx + 1}"
-                self.ai_controllers.append(AIController(p, MODE_DESERT))
+                # Use BrainController if brain assigned, else heuristic AIController
+                brain = brain_map.get(idx)
+                if use_brains and brain is not None:
+                    p.color_main = BrainController.COLOR_MAIN
+                    p.color_accent = BrainController.COLOR_ACCENT
+                    from sprites.vehicle import make_vehicle_surface
+                    p.base_image = make_vehicle_surface(p.color_main, p.color_accent)
+                    p.ghost_image = make_vehicle_surface(p.color_main, p.color_accent, True)
+                    p.image = p.base_image.copy()
+                    p.name = brain.name[:10]
+                    brain.start_episode(p)
+                    self.ai_controllers.append(BrainController(brain, p, MODE_DESERT))
+                else:
+                    p.color_main = AIController.COLOR_MAIN
+                    p.color_accent = AIController.COLOR_ACCENT
+                    from sprites.vehicle import make_vehicle_surface
+                    p.base_image = make_vehicle_surface(p.color_main, p.color_accent)
+                    p.ghost_image = make_vehicle_surface(p.color_main, p.color_accent, True)
+                    p.image = p.base_image.copy()
+                    p.name = f"AI{idx + 1}"
+                    self.ai_controllers.append(AIController(p, MODE_DESERT))
 
         for p in self.players:
             self.all_sprites.add(p)

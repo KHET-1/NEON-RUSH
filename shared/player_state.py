@@ -1,10 +1,11 @@
 class SharedPlayerState:
     """Carries persistent state between modes. Score/lives/coins survive transitions."""
 
-    def __init__(self, num_players=1, difficulty="normal", ai_config=None):
+    def __init__(self, num_players=1, difficulty="normal", ai_config=None, brain_config=None):
         self.num_players = num_players
         self.difficulty = difficulty
         self.ai_config = ai_config or {"ai_players": [], "score_mult": 1}
+        self.brain_config = brain_config or {"use_brains": False}
         self.scores = [0] * num_players
         self.coins = [0] * num_players
         self.lives = [3] * num_players

@@ -216,6 +216,7 @@ def init_sounds():
         "nuke": generate_sweep(200, 1600, 350, 0.35),
         "phase": generate_sweep(1200, 400, 250, 0.2),
         "surge": generate_sweep(150, 1800, 300, 0.3),
+        "evolve": generate_sweep(300, 900, 400, 0.2),
     })
 
     engine_sound = make_engine_sound()

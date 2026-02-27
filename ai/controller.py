@@ -248,3 +248,51 @@ class AIController:
             keys["boost"] = True
 
         p._ai_keys = keys
+
+
+class BrainController:
+    """Wraps a BaseBrain to drive a player sprite — same interface as AIController.
+
+    Each frame: get state → choose action → set _ai_keys → learn from reward.
+    """
+
+    # Learning brain vehicle colors (orange tint to distinguish from heuristic green)
+    COLOR_MAIN = (200, 140, 50)
+    COLOR_ACCENT = (255, 180, 80)
+
+    def __init__(self, brain, player, mode_index):
+        self.brain = brain
+        self.player = player
+        self.mode_index = mode_index
+        self.frame = 0
+        self._prev_state = None
+        self._prev_action = None
+
+    def update(self, mode):
+        """Called once per frame before player.update(). Sets _ai_keys on the player."""
+        self.frame += 1
+        p = self.player
+        if not p.alive:
+            p._ai_keys = {}
+            # Learn terminal state
+            if self._prev_state is not None:
+                reward = self.brain.compute_reward(p, mode, died=True)
+                state = self.brain.get_state(p, mode)
+                self.brain.learn(self._prev_state, self._prev_action, reward, state, True)
+                self._prev_state = None
+                self._prev_action = None
+            return
+
+        state = self.brain.get_state(p, mode)
+
+        # Learn from previous step
+        if self._prev_state is not None:
+            reward = self.brain.compute_reward(p, mode)
+            self.brain.learn(self._prev_state, self._prev_action, reward, state, False)
+
+        # Choose and apply action
+        action = self.brain.choose_action(state)
+        p._ai_keys = self.brain.action_to_keys(action, p)
+
+        self._prev_state = state
+        self._prev_action = action

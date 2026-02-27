@@ -23,7 +23,7 @@ from sprites.excitebike_sprites import (
 )
 from backgrounds.excitebike_bg import ExcitebikeBg
 from bosses.excitebike_boss import ExcitebikeBoss
-from ai.controller import AIController
+from ai.controller import AIController, BrainController
 
 
 class ExcitebikeMode(GameMode):
@@ -76,17 +76,28 @@ class ExcitebikeMode(GameMode):
         ai_cfg = self.shared_state.ai_config
         ai_indices = ai_cfg.get("ai_players", [])
         score_mult = ai_cfg.get("score_mult", 1)
+        use_brains = self.shared_state.brain_config.get("use_brains", False)
+        brain_map = self.shared_state.brain_config.get("brain_map", {})
         self.ai_controllers = []
         for idx in ai_indices:
             if idx < len(self.players):
                 p = self.players[idx]
                 p.is_ai = True
                 p.score_mult = score_mult
-                p.color_main = AIController.COLOR_MAIN
-                p.color_accent = AIController.COLOR_ACCENT
-                p.image = p._make_bike()
-                p.name = f"AI{idx + 1}"
-                self.ai_controllers.append(AIController(p, MODE_EXCITEBIKE))
+                brain = brain_map.get(idx)
+                if use_brains and brain is not None:
+                    p.color_main = BrainController.COLOR_MAIN
+                    p.color_accent = BrainController.COLOR_ACCENT
+                    p.image = p._make_bike()
+                    p.name = brain.name[:10]
+                    brain.start_episode(p)
+                    self.ai_controllers.append(BrainController(brain, p, MODE_EXCITEBIKE))
+                else:
+                    p.color_main = AIController.COLOR_MAIN
+                    p.color_accent = AIController.COLOR_ACCENT
+                    p.image = p._make_bike()
+                    p.name = f"AI{idx + 1}"
+                    self.ai_controllers.append(AIController(p, MODE_EXCITEBIKE))
 
         for p in self.players:
             self.all_sprites.add(p)

@@ -177,7 +177,7 @@ class HighScoreEntry:
 
 
 def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
-               loop_count=0, ai_frames=0, target_fps=144):
+               loop_count=0, ai_frames=0, target_fps=144, dashboard=None):
     from core.fonts import FONT_TITLE, FONT_SUBTITLE, FONT_HUD, FONT_HUD_SM, FONT_HUD_SM_BOLD
 
     t = (tick % 180) / 180
@@ -275,14 +275,17 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
     c0 = FONT_HUD_SM.render("Double-tap < or > = Leap   E/Enter = Heat bolt   P = Pause", True, SLOWMO_GREEN)
     screen.blit(c0, (cx - c0.get_width() // 2, 383))
 
-    # High scores
-    scores = load_highscores()
-    if scores:
-        hs = FONT_HUD_SM.render("HIGH SCORES", True, COIN_GOLD)
-        screen.blit(hs, (cx - hs.get_width() // 2, 440))
-        for i, entry in enumerate(scores[:3]):
-            txt = FONT_HUD_SM.render(f"{i + 1}. {entry['name']} - {entry['score']}", True, SOLAR_WHITE)
-            screen.blit(txt, (cx - txt.get_width() // 2, 460 + i * 20))
+    # Dashboard or High scores
+    if dashboard and dashboard.active:
+        dashboard.draw(screen, tick)
+    else:
+        scores = load_highscores()
+        if scores:
+            hs = FONT_HUD_SM.render("HIGH SCORES", True, COIN_GOLD)
+            screen.blit(hs, (cx - hs.get_width() // 2, 440))
+            for i, entry in enumerate(scores[:3]):
+                txt = FONT_HUD_SM.render(f"{i + 1}. {entry['name']} - {entry['score']}", True, SOLAR_WHITE)
+                screen.blit(txt, (cx - txt.get_width() // 2, 460 + i * 20))
 
     # Loop / AI counter in banner area
     if loop_count > 0 or ai_frames > 0:
@@ -316,7 +319,7 @@ def draw_paused(screen):
 
 
 def draw_gameover(screen, players, game_distance, tick, two_player,
-                  fps_snapshots=None, fps_total_frames=0):
+                  fps_snapshots=None, fps_total_frames=0, continues_left=0):
     from core.fonts import FONT_TITLE, FONT_HUD, FONT_HUD_SM
 
     overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
@@ -388,7 +391,15 @@ def draw_gameover(screen, players, game_distance, tick, two_player,
         fps_label = FONT_HUD_SM.render("FPS", True, (80, 80, 100))
         screen.blit(fps_label, (graph_x + graph_w - fps_label.get_width(), graph_y + graph_h + 2))
 
+    # Continue info
+    if continues_left > 0:
+        cont_t = FONT_HUD_SM.render(f"Continues: {continues_left}", True, SOLAR_YELLOW)
+        screen.blit(cont_t, (SCREEN_WIDTH // 2 - cont_t.get_width() // 2, py + ph - 65))
+
     blink = (tick // 30) % 2
     if blink:
-        retry = FONT_HUD.render("SPACE = Continue    ESC = Quit", True, NEON_CYAN)
+        if continues_left > 0:
+            retry = FONT_HUD.render("SPACE = Continue    ESC = Quit", True, NEON_CYAN)
+        else:
+            retry = FONT_HUD.render("SPACE = End    ESC = Quit", True, NEON_CYAN)
         screen.blit(retry, (SCREEN_WIDTH // 2 - retry.get_width() // 2, py + ph - 45))
