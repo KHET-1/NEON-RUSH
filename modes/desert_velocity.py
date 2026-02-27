@@ -21,6 +21,7 @@ from shared.boss_base import HeatBolt
 from sprites.vehicle import Player
 from sprites.desert_sprites import Obstacle, Coin, PowerUp, SolarFlare
 from backgrounds.desert_bg import Background
+from sprites.asteroid import Asteroid, DIR_DOWN
 from bosses.desert_boss import DesertBoss
 from ai.controller import AIController, BrainController
 
@@ -240,16 +241,23 @@ class DesertVelocityMode(GameMode):
                         FloatingText(p.rect.centerx, p.rect.top - 40, f"+{boss_pts} BOSS!", SOLAR_YELLOW, 28))
                 return 'boss_defeated'
 
+        elif self.phase == 'asteroids':
+            result = self._update_asteroid_phase(keys, alive_players, scroll_speed, diff_s)
+            if result:
+                return result
         else:
-            # Normal gameplay — check boss trigger
-            if self.check_boss_trigger():
-                self.boss = DesertBoss(self.particles, self.difficulty)
-                self.boss_active = True
-                self.all_sprites.add(self.boss)
-                SFX["boss_warning"].play()
+            # Normal gameplay — check asteroid trigger (at 50% of boss thresholds)
+            if self.check_asteroid_trigger():
+                self.start_asteroid_phase()
+                SFX["asteroid_warning"].play()
 
-        # --- Regular spawning (reduced during boss, scaled by difficulty) ---
-        spawn_mult = diff_s.get("boss_spawn_suppress", 0.3) if self.boss_active else 1.0
+        # --- Regular spawning (reduced during boss/asteroids, scaled by difficulty) ---
+        if self.boss_active:
+            spawn_mult = diff_s.get("boss_spawn_suppress", 0.3)
+        elif self.phase == 'asteroids':
+            spawn_mult = 0.15
+        else:
+            spawn_mult = 1.0
 
         self.obstacle_timer += 1
         spawn_rate = max(12, int(45 / (self.difficulty_scale * diff_s["spawn_div"])))
@@ -330,6 +338,11 @@ class DesertVelocityMode(GameMode):
                                               [NUKE_ORANGE, SOLAR_YELLOW], 8, 4, 25, 2)
                         p.score += 50 * p.score_mult
                         obs.kill()
+                    for ast in list(self.asteroids):
+                        self.particles.burst(*ast.get_death_particles())
+                        p.score += ast.points * p.score_mult
+                        self.asteroids_cleared += 1
+                        ast.kill()
                     self.shake.trigger(8, 20)
                     self.screen_flash = 20
                     SFX["nuke"].play()
@@ -369,6 +382,74 @@ class DesertVelocityMode(GameMode):
             _snd.engine_channel.fadeout(200)
         elif _snd.engine_channel and _snd.engine_channel.get_busy():
             _snd.engine_channel.set_volume(min(0.12, max_speed * 0.01))
+
+        return None
+
+    def _update_asteroid_phase(self, keys, alive_players, scroll_speed, diff_s):
+        """Handle asteroid phase: spawn, shoot, collide, check boss trigger."""
+        # Fire heat bolts
+        for p in alive_players:
+            fired, bx, by = p.try_fire_heat_bolt(keys)
+            if fired:
+                bolt = HeatBolt(bx, by, p.color_accent)
+                self.heat_bolts.add(bolt)
+                self.all_sprites.add(bolt)
+
+        # Update heat bolts — check asteroid collisions
+        for bolt in list(self.heat_bolts):
+            bolt.update()
+            if not bolt.alive:
+                continue
+            for ast in list(self.asteroids):
+                if bolt.rect.colliderect(ast.rect):
+                    destroyed = ast.take_hit(bolt.damage)
+                    self.particles.burst(bolt.rect.centerx, bolt.rect.centery,
+                                         [SOLAR_YELLOW, SOLAR_WHITE], 6, 3, 20, 2)
+                    bolt.kill()
+                    if destroyed:
+                        self.particles.burst(*ast.get_death_particles())
+                        for p in alive_players:
+                            pts = ast.points * p.score_mult
+                            p.score += pts
+                            self.floating_texts.append(
+                                FloatingText(ast.rect.centerx, ast.rect.top - 10,
+                                             f"+{pts}", SOLAR_YELLOW))
+                        self.asteroids_cleared += 1
+                        SFX["asteroid_destroy"].play()
+                    else:
+                        SFX["asteroid_hit"].play()
+                    break
+
+        # Spawn asteroids
+        self.asteroid_timer += 1
+        if self.asteroid_timer > 40:
+            ax = random.randint(ROAD_LEFT + 20, ROAD_RIGHT - 20)
+            ast = Asteroid(ax, -50, direction=DIR_DOWN)
+            self.asteroids.add(ast)
+            self.all_sprites.add(ast)
+            self.asteroid_timer = 0
+
+        # Update asteroids
+        for ast in list(self.asteroids):
+            ast.update(scroll_speed)
+
+        # Asteroid-player collision
+        for p in alive_players:
+            if p.invincible_timer <= 0 and not p.ghost_mode and not p.phase:
+                hit = pygame.sprite.spritecollideany(p, self.asteroids)
+                if hit:
+                    hit.kill()
+                    p.take_hit(self.shake)
+                    if not p.alive and not any(pl.alive for pl in self.players):
+                        return 'gameover'
+
+        # Check boss trigger
+        if self.check_boss_trigger():
+            self.start_boss_phase()
+            self.boss = DesertBoss(self.particles, self.difficulty)
+            self.boss_active = True
+            self.all_sprites.add(self.boss)
+            SFX["boss_warning"].play()
 
         return None
 
@@ -428,6 +509,9 @@ class DesertVelocityMode(GameMode):
             p.combo.draw(screen, p.rect.centerx, p.rect.top - 50)
 
         self.milestone.draw(screen)
+
+        # Asteroid HUD
+        self.draw_asteroid_hud(screen)
 
         # Boss draw
         if self.boss:

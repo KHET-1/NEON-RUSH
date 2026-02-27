@@ -97,6 +97,9 @@ class AIController:
         if mode.boss_active and mode.boss and mode.boss.alive:
             if p.heat >= p.HEAT_COST and p.fire_cooldown <= 0:
                 keys["fire"] = True
+        elif mode.phase == 'asteroids' and len(mode.asteroids) > 0:
+            if p.heat >= p.HEAT_COST and p.fire_cooldown <= 0:
+                keys["fire"] = True
 
         # Boost occasionally when heat is high
         if p.heat > 60 and not p.ghost_mode and random.random() < 0.02:
@@ -152,6 +155,9 @@ class AIController:
 
         # Fire at boss
         if mode.boss_active and mode.boss and mode.boss.alive:
+            if p.heat >= 40 and p.fire_cooldown <= 0:
+                keys["fire"] = True
+        elif mode.phase == 'asteroids' and len(mode.asteroids) > 0:
             if p.heat >= 40 and p.fire_cooldown <= 0:
                 keys["fire"] = True
 
@@ -240,6 +246,9 @@ class AIController:
 
         # Fire at boss
         if mode.boss_active and mode.boss and mode.boss.alive:
+            if p.heat >= 40 and p.fire_cooldown <= 0:
+                keys["fire"] = True
+        elif mode.phase == 'asteroids' and len(mode.asteroids) > 0:
             if p.heat >= 40 and p.fire_cooldown <= 0:
                 keys["fire"] = True
 

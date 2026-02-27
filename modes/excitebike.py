@@ -22,6 +22,7 @@ from sprites.excitebike_sprites import (
     ExcitebikeCoin, ExcitebikePowerUp,
 )
 from backgrounds.excitebike_bg import ExcitebikeBg
+from sprites.asteroid import Asteroid, DIR_LEFT
 from bosses.excitebike_boss import ExcitebikeBoss
 from ai.controller import AIController, BrainController
 
@@ -202,15 +203,22 @@ class ExcitebikeMode(GameMode):
                     self.floating_texts.append(
                         FloatingText(p.rect.centerx, p.rect.top - 40, f"+{boss_pts} BOSS!", SOLAR_YELLOW, 28))
                 return 'boss_defeated'
+        elif self.phase == 'asteroids':
+            result = self._update_asteroid_phase(keys, alive_players, scroll_speed, diff_s)
+            if result:
+                return result
         else:
-            if self.check_boss_trigger():
-                self.boss = ExcitebikeBoss(self.particles, shake=self.shake)
-                self.boss_active = True
-                self.all_sprites.add(self.boss)
-                SFX["boss_warning"].play()
+            if self.check_asteroid_trigger():
+                self.start_asteroid_phase()
+                SFX["asteroid_warning"].play()
 
         # --- Spawning ---
-        spawn_mult = 0.3 if self.boss_active else 1.0
+        if self.boss_active:
+            spawn_mult = 0.3
+        elif self.phase == 'asteroids':
+            spawn_mult = 0.15
+        else:
+            spawn_mult = 1.0
 
         self.obstacle_timer += 1
         spawn_rate = max(20, int(60 / (self.difficulty_scale * diff_s["spawn_div"])))
@@ -346,6 +354,11 @@ class ExcitebikeMode(GameMode):
                                               [NUKE_ORANGE, SOLAR_YELLOW], 6, 3, 20, 2)
                         p.score += 50 * p.score_mult
                         mud.kill()
+                    for ast in list(self.asteroids):
+                        self.particles.burst(*ast.get_death_particles())
+                        p.score += ast.points * p.score_mult
+                        self.asteroids_cleared += 1
+                        ast.kill()
                     self.shake.trigger(8, 20)
                     self.screen_flash = 20
                     SFX["nuke"].play()
@@ -370,6 +383,77 @@ class ExcitebikeMode(GameMode):
 
         self.particles.update()
         self.shake.update()
+        return None
+
+    def _update_asteroid_phase(self, keys, alive_players, scroll_speed, diff_s):
+        """Handle asteroid phase: horizontal asteroids from right."""
+        # Fire heat bolts (go RIGHT)
+        for p in alive_players:
+            fired, bx, by = p.try_fire_heat_bolt(keys)
+            if fired:
+                bolt = HeatBolt(bx, by, p.color_accent)
+                bolt.speed = 10
+                bolt.rect.centery = by
+                self.heat_bolts.add(bolt)
+
+        # Update heat bolts — check asteroid collisions
+        for bolt in list(self.heat_bolts):
+            bolt.rect.x += 10
+            if bolt.rect.left > SCREEN_WIDTH + 20:
+                bolt.kill()
+                continue
+            for ast in list(self.asteroids):
+                if bolt.rect.colliderect(ast.rect):
+                    destroyed = ast.take_hit(bolt.damage)
+                    self.particles.burst(bolt.rect.centerx, bolt.rect.centery,
+                                         [SOLAR_YELLOW, SOLAR_WHITE], 6, 3, 20, 2)
+                    bolt.kill()
+                    if destroyed:
+                        self.particles.burst(*ast.get_death_particles())
+                        for p in alive_players:
+                            pts = ast.points * p.score_mult
+                            p.score += pts
+                            self.floating_texts.append(
+                                FloatingText(ast.rect.centerx, ast.rect.top - 10,
+                                             f"+{pts}", SOLAR_YELLOW))
+                        self.asteroids_cleared += 1
+                        SFX["asteroid_destroy"].play()
+                    else:
+                        SFX["asteroid_hit"].play()
+                    break
+
+        # Spawn asteroids from right side, in random lanes
+        self.asteroid_timer += 1
+        if self.asteroid_timer > 45:
+            lane = random.randint(0, 2)
+            lane_y = self.bg.get_lane_y(lane) + self.bg.LANE_HEIGHT // 2
+            ast = Asteroid(SCREEN_WIDTH + 50, lane_y, direction=DIR_LEFT)
+            self.asteroids.add(ast)
+            self.all_sprites.add(ast)
+            self.asteroid_timer = 0
+
+        # Update asteroids
+        for ast in list(self.asteroids):
+            ast.update(scroll_speed)
+
+        # Asteroid-player collision
+        for p in alive_players:
+            if p.invincible_timer <= 0 and not p.ghost_mode and not p.phase:
+                hit = pygame.sprite.spritecollideany(p, self.asteroids)
+                if hit:
+                    hit.kill()
+                    p.take_hit(self.shake)
+                    if not p.alive and not any(pl.alive for pl in self.players):
+                        return 'gameover'
+
+        # Check boss trigger
+        if self.check_boss_trigger():
+            self.start_boss_phase()
+            self.boss = ExcitebikeBoss(self.particles, shake=self.shake)
+            self.boss_active = True
+            self.all_sprites.add(self.boss)
+            SFX["boss_warning"].play()
+
         return None
 
     def draw(self, screen):
@@ -415,6 +499,9 @@ class ExcitebikeMode(GameMode):
             p.combo.draw(screen, p.rect.centerx, p.rect.top - 40)
 
         self.milestone.draw(screen)
+
+        # Asteroid HUD
+        self.draw_asteroid_hud(screen)
 
         if self.boss:
             self.boss.draw(screen)
