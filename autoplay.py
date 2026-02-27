@@ -49,6 +49,8 @@ def parse_args():
                    help="God mode — AI can't die (for testing bosses/transitions)")
     p.add_argument("--learn", action="store_true",
                    help="Enable learning AI (Q-learning, persists to .neon_rush_brain.json)")
+    p.add_argument("--evo", action="store_true",
+                   help="Enable evolution mode — cycle through levels with increasing difficulty")
     p.add_argument("--verbose", "-v", action="store_true",
                    help="Print frame-by-frame stats")
     args = p.parse_args()
@@ -544,7 +546,7 @@ class RunStats:
 # ══════════════════════════════════════════════════════════════════
 
 class GameInstance:
-    def __init__(self, slot_num, difficulty, num_players, god_mode, brain=None):
+    def __init__(self, slot_num, difficulty, num_players, god_mode, brain=None, evo=False):
         from core.particles import ParticleSystem
         from core.shake import ScreenShake
         from shared.player_state import SharedPlayerState
@@ -556,10 +558,18 @@ class GameInstance:
         self.slot = slot_num
         self.god_mode = god_mode
         self.brain = brain
+        self.evo_mgr = None
+        if evo:
+            from core.evolution import EvolutionManager
+            self.evo_mgr = EvolutionManager()
+            self.evo_mgr.enabled = True
+            self.evo_mgr.start_run()
         self.screen = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
         self.particles = ParticleSystem()
         self.shake = ScreenShake()
-        self.shared_state = SharedPlayerState(num_players, difficulty)
+        self.shared_state = SharedPlayerState(
+            num_players, difficulty,
+            evolution_tier=self.evo_mgr.current_tier if self.evo_mgr else 1)
         self.MODE_CLASSES = [DesertVelocityMode, ExcitebikeMode, MicroMachinesMode]
         self.current_mode = self.MODE_CLASSES[0](self.particles, self.shake, self.shared_state)
         self.current_mode.setup()
@@ -651,6 +661,20 @@ class GameInstance:
 
         mode_idx = self.shared_state.current_mode
         if mode_idx >= len(self.MODE_CLASSES):
+            if self.evo_mgr and self.evo_mgr.enabled:
+                new_tier = self.evo_mgr.advance_cycle()
+                self.shared_state.reset_for_cycle(new_tier)
+                from_surface = self.screen.copy()
+                if self.current_mode:
+                    self.current_mode.cleanup()
+                self.transition = TransitionEffect(
+                    'glitch', f"EVOLUTION V{new_tier}!",
+                    from_surface, evolution_tier=new_tier)
+                self.stats.transitions += 1
+                self.state = STATE_TRANSITION
+                self.current_mode = self.MODE_CLASSES[0](
+                    self.particles, self.shake, self.shared_state)
+                return
             self.state = STATE_VICTORY
             return
         from_surface = self.screen.copy()
@@ -659,7 +683,8 @@ class GameInstance:
         styles = ['zoom_rotate', 'scanline', 'glitch']
         style = styles[min(mode_idx, len(styles) - 1)]
         mode_name = MODE_NAMES[mode_idx] if mode_idx < len(MODE_NAMES) else "???"
-        self.transition = TransitionEffect(style, mode_name, from_surface)
+        self.transition = TransitionEffect(style, mode_name, from_surface,
+                                           evolution_tier=self.shared_state.evolution_tier)
         self.stats.transitions += 1
         self.state = STATE_TRANSITION
         self.current_mode = self.MODE_CLASSES[mode_idx](
@@ -711,7 +736,7 @@ def run_grid(args):
     title_font = pygame.font.SysFont("freesans", 20, bold=True)
 
     difficulties = ["easy", "normal", "hard", "easy", "normal", "hard"]
-    games = [GameInstance(i + 1, difficulties[i], args.players, args.god, brain)
+    games = [GameInstance(i + 1, difficulties[i], args.players, args.god, brain, evo=args.evo)
              for i in range(6)]
 
     total_start = time.time()
@@ -740,7 +765,7 @@ def run_grid(args):
             brain.save()
             generation += 1
             print(f"  Gen {generation} | {brain.stats_str()}")
-            games = [GameInstance(i + 1, difficulties[i], args.players, args.god, brain)
+            games = [GameInstance(i + 1, difficulties[i], args.players, args.god, brain, evo=args.evo)
                      for i in range(6)]
             any_alive = True
 
@@ -758,11 +783,12 @@ def run_grid(args):
         alive_count = sum(1 for g in games if not g.finished)
         brain_str = f"  |  {brain.stats_str()}" if brain else ""
         mode_label = "LEARNING" if args.learn else "AUTOPLAY"
+        evo_str = "  |  EVO" if args.evo else ""
         top_text = title_font.render(
             f"NEON RUSH {mode_label}  |  {args.speed}x  |  "
             f"{alive_count}/6 Live  |  Gen {generation}  |  "
             f"{elapsed:.0f}s{'  |  GOD' if args.god else ''}"
-            f"{brain_str}",
+            f"{evo_str}{brain_str}",
             True, NEON_CYAN)
         display.blit(top_text, (PAD + 4, 8))
 
@@ -781,12 +807,13 @@ def run_grid(args):
             boss_str = " [BOSS]" if (g.current_mode and g.current_mode.boss_active) else ""
             status = g.stats.result if g.finished else "PLAYING"
             diff_label = g.difficulty.upper()
+            tier_str = f" V{g.shared_state.evolution_tier}" if g.shared_state.evolution_tier > 1 else ""
 
             label_color = (255, 80, 80) if g.finished and g.stats.result == 'GAME OVER' else \
                           (0, 255, 255) if g.finished and g.stats.result == 'VICTORY' else \
                           SOLAR_YELLOW
             label = label_font.render(
-                f"#{g.slot} {diff_label} | {mode_name} | "
+                f"#{g.slot} {diff_label}{tier_str} | {mode_name} | "
                 f"Score:{score:,} | {dist:.0f}km{boss_str} | {status}",
                 True, label_color)
             display.blit(label, (x + 4, y + 2))
@@ -868,7 +895,15 @@ def run_single(args, run_num, brain=None):
     particles = ParticleSystem()
     shake = ScreenShake()
 
-    shared_state = SharedPlayerState(args.players, args.difficulty)
+    evo_mgr = None
+    if args.evo:
+        from core.evolution import EvolutionManager
+        evo_mgr = EvolutionManager()
+        evo_mgr.enabled = True
+        evo_mgr.start_run()
+    shared_state = SharedPlayerState(
+        args.players, args.difficulty,
+        evolution_tier=evo_mgr.current_tier if evo_mgr else 1)
     MODE_CLASSES = [DesertVelocityMode, ExcitebikeMode, MicroMachinesMode]
     current_mode = MODE_CLASSES[0](particles, shake, shared_state)
     current_mode.setup()
@@ -891,6 +926,19 @@ def run_single(args, run_num, brain=None):
         nonlocal current_mode, transition, state
         mode_idx = shared_state.current_mode
         if mode_idx >= len(MODE_CLASSES):
+            if evo_mgr and evo_mgr.enabled:
+                new_tier = evo_mgr.advance_cycle()
+                shared_state.reset_for_cycle(new_tier)
+                from_surface = screen.copy()
+                if current_mode:
+                    current_mode.cleanup()
+                transition = TransitionEffect(
+                    'glitch', f"EVOLUTION V{new_tier}!",
+                    from_surface, evolution_tier=new_tier)
+                stats.transitions += 1
+                state = STATE_TRANSITION
+                current_mode = MODE_CLASSES[0](particles, shake, shared_state)
+                return
             state = STATE_VICTORY
             return
         from_surface = screen.copy()
@@ -899,7 +947,8 @@ def run_single(args, run_num, brain=None):
         styles = ['zoom_rotate', 'scanline', 'glitch']
         style = styles[min(mode_idx, len(styles) - 1)]
         mode_name = MODE_NAMES[mode_idx] if mode_idx < len(MODE_NAMES) else "???"
-        transition = TransitionEffect(style, mode_name, from_surface)
+        transition = TransitionEffect(style, mode_name, from_surface,
+                                       evolution_tier=shared_state.evolution_tier if evo_mgr else 1)
         stats.transitions += 1
         state = STATE_TRANSITION
         current_mode = MODE_CLASSES[mode_idx](particles, shake, shared_state)

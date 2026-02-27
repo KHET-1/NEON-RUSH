@@ -19,10 +19,19 @@ _HORIZON_Y = int(SCREEN_HEIGHT * 0.30)
 _GROUND_ROWS = SCREEN_HEIGHT - _HORIZON_Y
 _PROJECTION_D = 100.0       # perspective scale (world-Z = D / t)
 _BAND_WORLD = 6.0           # world-space depth per color band
-_SCROLL_K = 0.15            # scroll_y → camera_z conversion
+_SCROLL_K = 0.15            # scroll_y -> camera_z conversion
+
+# Road geometry (tapers with perspective: width * t)
+_ROAD_HALF = ROAD_WIDTH // 2   # 300 — half road width at full scale
+_SHOULDER_W = 24                # shoulder width at full scale
+_RUMBLE_W = 8                   # rumble strip width at full scale
+
+# Perspective dash pattern (world-space)
+_DASH_WORLD_PERIOD = 4.0        # world units per dash cycle
+_DASH_ON_RATIO = 0.5            # center line: 50% on
+_LANE_ON_RATIO = 0.3            # lane lines: 30% on (shorter dashes)
 
 # Off-road ground — alternating 5-tier depth gradient
-# Band A/B alternate to create visible "planes" receding into the screen
 _STRIP_A = [
     (35, 22, 30),   # far — dark purple-brown
     (55, 35, 25),   # mid-far — dusty brown
@@ -49,7 +58,10 @@ _SHOULDER_BAND_B = (58, 36, 14)   # darker variant
 # Rumble strips
 _RUMBLE_A = (200, 50, 50)
 _RUMBLE_B = (220, 220, 220)
-_RUMBLE_W = 8
+
+# Edge / marker colors
+_EDGE_GLOW = (20, 120, 150)
+_LANE_COLOR = (65, 65, 88)
 
 
 class Background:
@@ -138,35 +150,38 @@ class Background:
                              (sx + inset, _HORIZON_Y - mh),
                              (sx + inset + flat, _HORIZON_Y - mh), 1)
 
-    # --- Layer 2: Pseudo-3D perspective ground plane ---
+    # --- Layer 2: Pseudo-3D perspective ground + road (tapered) ---
     def _draw_perspective_ground(self, screen):
-        """Pseudo-3D ground: world Z = D/t projects fixed-size world bands
-        onto the screen. Bands are thin at the horizon and thick at the
-        bottom — creating the 'driving into the screen' depth illusion.
+        """Pseudo-3D ground plane with road width tapering to vanishing point.
 
-        All zones (off-road, shoulders, rumble, road surface) share the
-        same band phase so the whole ground plane feels like one 3D floor.
+        Road width scales by t (depth ratio) — full width at the bottom,
+        converging to a point at the horizon. All elements (off-road,
+        shoulders, rumble, road surface, edge glow, center/lane dashes)
+        are drawn per-scanline with perspective-correct positions.
         """
         camera_z = self.scroll_y * _SCROLL_K
-        shoulder_l = ROAD_LEFT - 24
-        shoulder_r = ROAD_RIGHT + 24
 
         for i in range(_GROUND_ROWS):
             y = _HORIZON_Y + i
             z = self._line_z[i]
             t = self._line_t[i]
 
-            # Perspective band index — fixed size in world space
+            # === Perspective taper: road narrows toward horizon ===
+            half_road = int(_ROAD_HALF * t)
+            road_l = ROAD_CENTER - half_road
+            road_r = ROAD_CENTER + half_road
+            sh_w = int(_SHOULDER_W * t)
+            shoulder_l = road_l - sh_w
+            shoulder_r = road_r + sh_w
+            rw = max(1, int(_RUMBLE_W * t))
+
+            # === Band index (perspective-correct) ===
             pattern = (z - camera_z) / _BAND_WORLD
             band = int(math.floor(pattern)) % 2
-
-            # Rumble at 3x band frequency for finer detail
             rumble_band = int(math.floor(pattern * 3)) % 2
-
-            # Color depth slot: 0=far 4=near
             slot = min(4, int(t * 5))
 
-            # Off-road (both sides of shoulders)
+            # === Off-road (full width outside shoulders) ===
             gc = _STRIP_A[slot] if band == 0 else _STRIP_B[slot]
             if shoulder_l > 0:
                 pygame.draw.line(screen, gc, (0, y), (shoulder_l, y))
@@ -174,26 +189,57 @@ class Background:
                 pygame.draw.line(screen, gc,
                                  (shoulder_r, y), (SCREEN_WIDTH, y))
 
-            # Shoulders
-            sc = _SHOULDER_BAND_A if band == 0 else _SHOULDER_BAND_B
-            pygame.draw.line(screen, sc, (shoulder_l, y), (ROAD_LEFT, y))
-            pygame.draw.line(screen, sc, (ROAD_RIGHT, y), (shoulder_r, y))
+            # Skip road details when too narrow (near horizon)
+            if half_road < 3:
+                # Just fill the center with off-road color
+                pygame.draw.line(screen, gc, (shoulder_l, y), (shoulder_r, y))
+                continue
 
-            # Rumble strips (inner road edge)
+            # === Shoulders ===
+            if sh_w > 0:
+                sc = _SHOULDER_BAND_A if band == 0 else _SHOULDER_BAND_B
+                pygame.draw.line(screen, sc, (shoulder_l, y), (road_l, y))
+                pygame.draw.line(screen, sc, (road_r, y), (shoulder_r, y))
+
+            # === Rumble strips ===
             rc = _RUMBLE_A if rumble_band == 0 else _RUMBLE_B
-            pygame.draw.line(screen, rc,
-                             (ROAD_LEFT, y), (ROAD_LEFT + _RUMBLE_W, y))
-            pygame.draw.line(screen, rc,
-                             (ROAD_RIGHT - _RUMBLE_W, y), (ROAD_RIGHT, y))
+            pygame.draw.line(screen, rc, (road_l, y), (road_l + rw, y))
+            pygame.draw.line(screen, rc, (road_r - rw, y), (road_r, y))
 
-            # Road surface
-            road_c = _ROAD_BAND_A if band == 0 else _ROAD_BAND_B
-            pygame.draw.line(screen, road_c,
-                             (ROAD_LEFT + _RUMBLE_W, y),
-                             (ROAD_RIGHT - _RUMBLE_W, y))
+            # === Road surface ===
+            inner_l = road_l + rw
+            inner_r = road_r - rw
+            if inner_r > inner_l:
+                road_c = _ROAD_BAND_A if band == 0 else _ROAD_BAND_B
+                pygame.draw.line(screen, road_c, (inner_l, y), (inner_r, y))
+
+            # === Edge glow (tapers with perspective) ===
+            ew = max(1, int(2 * t))
+            pygame.draw.line(screen, _EDGE_GLOW,
+                             (road_l - ew, y), (road_l + ew, y))
+            pygame.draw.line(screen, _EDGE_GLOW,
+                             (road_r - ew, y), (road_r + ew, y))
+
+            # === Perspective-correct dashed markers ===
+            dash_phase = ((z - camera_z) / _DASH_WORLD_PERIOD) % 1.0
+
+            # Center line (magenta, 2px)
+            if dash_phase < _DASH_ON_RATIO:
+                pygame.draw.line(screen, NEON_MAGENTA,
+                                 (ROAD_CENTER - 1, y), (ROAD_CENTER, y))
+
+            # Lane lines (at 1/4 and 3/4 of tapered road width)
+            if dash_phase < _LANE_ON_RATIO and half_road > 15:
+                quarter = half_road // 2
+                lane1 = ROAD_CENTER - quarter
+                lane2 = ROAD_CENTER + quarter
+                pygame.draw.line(screen, _LANE_COLOR,
+                                 (lane1, y), (lane1, y))
+                pygame.draw.line(screen, _LANE_COLOR,
+                                 (lane2, y), (lane2, y))
 
     def _draw_v2(self, speed, screen):
-        """Full V2+ pseudo-3D: sky -> stars -> mesas -> perspective ground."""
+        """Full V2+ pseudo-3D: sky -> stars -> mesas -> tapered ground+road."""
         screen.fill(_V2_SKY)
         self._draw_stars(screen)
         self._draw_mesas(screen)
@@ -206,23 +252,10 @@ class Background:
         dash_period = DASH_LENGTH + DASH_GAP
 
         if self.tier >= 2:
-            # V2+: pseudo-3D pipeline (road surface included)
+            # V2+: full pseudo-3D (everything drawn inside perspective ground)
             self._draw_v2(actual_speed, screen)
-            # Road edge glow + edge lines (horizon down only)
-            pygame.draw.line(screen, (20, 120, 150),
-                             (ROAD_LEFT, _HORIZON_Y),
-                             (ROAD_LEFT, SCREEN_HEIGHT), 4)
-            pygame.draw.line(screen, ROAD_EDGE_COLOR,
-                             (ROAD_LEFT, _HORIZON_Y),
-                             (ROAD_LEFT, SCREEN_HEIGHT), 2)
-            pygame.draw.line(screen, (20, 120, 150),
-                             (ROAD_RIGHT, _HORIZON_Y),
-                             (ROAD_RIGHT, SCREEN_HEIGHT), 4)
-            pygame.draw.line(screen, ROAD_EDGE_COLOR,
-                             (ROAD_RIGHT, _HORIZON_Y),
-                             (ROAD_RIGHT, SCREEN_HEIGHT), 2)
         else:
-            # V1: flat desert fill + solid road surface
+            # V1: flat desert fill + solid road
             screen.fill(DESERT_BG)
             pygame.draw.rect(screen, ROAD_SHOULDER,
                              (ROAD_LEFT - 24, 0, ROAD_WIDTH + 48,
@@ -238,32 +271,26 @@ class Background:
             pygame.draw.line(screen, ROAD_EDGE_COLOR,
                              (ROAD_RIGHT, 0), (ROAD_RIGHT, SCREEN_HEIGHT), 2)
 
-        # Center dashed line
-        road_top = _HORIZON_Y if self.tier >= 2 else 0
-        offset = int(self.scroll_y) % dash_period
-        y = -DASH_LENGTH + offset
-        while y < SCREEN_HEIGHT + DASH_LENGTH:
-            y_top = max(road_top, y)
-            y_bot = y + DASH_LENGTH
-            if y_bot > y_top:
-                pygame.draw.line(screen, NEON_MAGENTA,
-                                 (ROAD_CENTER, y_top),
-                                 (ROAD_CENTER, y_bot), 2)
-            y += dash_period
-
-        # Lane lines
-        for lane_x in [ROAD_LEFT + ROAD_WIDTH // 4,
-                        ROAD_LEFT + 3 * ROAD_WIDTH // 4]:
+            # V1 center dashed line
+            offset = int(self.scroll_y) % dash_period
             y = -DASH_LENGTH + offset
             while y < SCREEN_HEIGHT + DASH_LENGTH:
-                y_top = max(road_top, y)
-                y_bot = y + DASH_LENGTH // 2
-                if y_bot > y_top:
-                    pygame.draw.line(screen, (65, 65, 88),
-                                     (lane_x, y_top), (lane_x, y_bot), 1)
+                pygame.draw.line(screen, NEON_MAGENTA,
+                                 (ROAD_CENTER, y),
+                                 (ROAD_CENTER, y + DASH_LENGTH), 2)
                 y += dash_period
 
-        # Speed streaks
+            # V1 lane lines
+            for lane_x in [ROAD_LEFT + ROAD_WIDTH // 4,
+                            ROAD_LEFT + 3 * ROAD_WIDTH // 4]:
+                y = -DASH_LENGTH + offset
+                while y < SCREEN_HEIGHT + DASH_LENGTH:
+                    pygame.draw.line(screen, (65, 65, 88),
+                                     (lane_x, y),
+                                     (lane_x, y + DASH_LENGTH // 2), 1)
+                    y += dash_period
+
+        # Speed streaks (shared V1+V2)
         if speed > 8:
             intensity = min(30, int((speed - 8) * 12))
             line_surf = pygame.Surface((2, int(speed * 4)), pygame.SRCALPHA)
@@ -273,7 +300,7 @@ class Background:
                 ly = random.randint(0, SCREEN_HEIGHT)
                 screen.blit(line_surf, (lx, ly))
 
-        # Sand particles
+        # Sand particles (shared V1+V2)
         self.sand_timer += 1
         if self.sand_timer > 6:
             for _ in range(2):
