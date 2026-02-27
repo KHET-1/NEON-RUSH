@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 highscores.json
+.neon_rush_evolve.json

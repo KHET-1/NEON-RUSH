@@ -5,9 +5,208 @@ import math
 import json
 import os
 import array
+import traceback
 
-pygame.init()
-pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EVOLVE_FILE = os.path.join(_BASE_DIR, ".neon_rush_evolve.json")
+HIGHSCORE_FILE = os.path.join(_BASE_DIR, "highscores.json")
+
+
+# === Self-Healing + Evolve ===
+def evolve_load():
+    try:
+        with open(EVOLVE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"heals": {}, "last_run": None}
+
+
+def evolve_record(heal_id, success):
+    data = evolve_load()
+    data["heals"] = data.get("heals", {})
+    data["heals"][heal_id] = data["heals"].get(heal_id, {"ok": 0, "fail": 0})
+    data["heals"][heal_id]["ok" if success else "fail"] += 1
+    data["last_run"] = __import__("time").time()
+    try:
+        with open(EVOLVE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def heal_highscores():
+    """Reset corrupt highscores.json to valid empty list."""
+    try:
+        with open(HIGHSCORE_FILE, "r") as f:
+            data = json.load(f)
+        if not isinstance(data, list) or any(not isinstance(s, dict) or "name" not in s or "score" not in s for s in data):
+            raise ValueError("Invalid structure")
+        return True, "ok"
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, KeyError):
+        try:
+            with open(HIGHSCORE_FILE, "w") as f:
+                json.dump([], f)
+            evolve_record("highscores_reset", True)
+            return True, "reset"
+        except Exception:
+            return False, "write_failed"
+
+
+def heal_pygame_display():
+    """Set alternate display driver for next run."""
+    if not os.environ.get("SDL_VIDEODRIVER"):
+        os.environ["SDL_VIDEODRIVER"] = "x11"
+        return True, "x11_set"
+    return True, "already_set"
+
+
+def preflight_heal():
+    """Run known healers before main loop. Returns actions taken."""
+    actions = []
+    ok, msg = heal_highscores()
+    if msg == "reset":
+        actions.append("highscores reset (was corrupt)")
+    return actions
+
+
+def crash_heal(exc_type, exc_value, exc_tb):
+    """Attempt auto-fix based on crash. Returns (fixed: bool, actions: list)."""
+    actions = []
+    err_text = str(exc_value) if exc_value else ""
+    full = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+
+    if "json" in err_text.lower() or "JSONDecodeError" in full or "highscores" in full:
+        ok, msg = heal_highscores()
+        if ok and msg == "reset":
+            actions.append("highscores repaired")
+            evolve_record("crash_highscores", True)
+            return True, actions
+
+    if "pygame.error" in str(exc_type) or "display" in err_text.lower() or "video" in err_text.lower():
+        ok, msg = heal_pygame_display()
+        if ok:
+            actions.append("SDL_VIDEODRIVER=x11 set for next run — restart the game")
+            evolve_record("crash_display", True)
+        return False, actions  # Can't retry display mid-run
+
+    return False, actions
+
+
+# === Crash Handler (before pygame.init so we can catch init failures) ===
+def show_crash_screen(exc_type, exc_value, exc_tb, heal_actions=None):
+    """Display a human-readable crash dialog with fix suggestions."""
+    heal_actions = heal_actions or []
+    lines = traceback.format_exception(exc_type, exc_value, exc_tb)
+    err_text = "".join(lines).strip()
+    err_short = f"{exc_type.__name__}: {exc_value}" if exc_value else str(exc_type)
+
+    FIX_HINTS = {
+        "pygame.error": "Pygame display/audio failed. Try: close other fullscreen apps, update GPU drivers, or run with SDL_VIDEODRIVER=x11",
+        "ModuleNotFoundError": "Missing dependency. Run: pip install -r requirements.txt",
+        "FileNotFoundError": "Missing file or asset. Check the file path and that you're running from the project root.",
+        "PermissionError": "No write access. Run from a directory you own, or fix highscores.json permissions.",
+        "json.JSONDecodeError": "Corrupt highscores.json. Delete or fix the file.",
+        "MemoryError": "Out of memory. Close other apps or reduce PARTICLE_CAP in the code.",
+        "KeyError": "Missing key in config or data. Check your game data files.",
+        "TypeError": "Wrong data type. Often from bad config or save file.",
+        "AttributeError": "Object missing attribute. Possible version mismatch or corrupt state.",
+        "IndexError": "List/array index out of range. May indicate empty/corrupt data.",
+    }
+    hint = "Check the traceback below and fix the reported line."
+    for key, msg in FIX_HINTS.items():
+        if key in err_short or key in err_text:
+            hint = msg
+            break
+    if heal_actions:
+        hint = "We tried: " + "; ".join(heal_actions) + ". " + hint
+
+    # Try to show pygame window (init may have partially failed)
+    try:
+        try:
+            pygame.init()
+        except Exception:
+            pass
+        win = pygame.display.set_mode((700, 420))
+        pygame.display.set_caption("NEON RUSH - Error")
+        font = pygame.font.SysFont("freesans", 16)
+        font_b = pygame.font.SysFont("freesans", 18, bold=True)
+
+        running = True
+        line_h = 18
+        while running:
+            for e in pygame.event.get():
+                if e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE):
+                    running = False
+
+            win.fill((30, 15, 20))
+            pygame.draw.rect(win, (80, 30, 40), (0, 0, 700, 80))
+            pygame.draw.line(win, (255, 80, 100), (0, 80), (700, 80), 2)
+
+            title = font_b.render("NEON RUSH crashed", True, (255, 150, 150))
+            win.blit(title, (20, 20))
+            sub = font.render("Here's what went wrong and how to fix it:", True, (200, 150, 150))
+            win.blit(sub, (20, 48))
+
+            hint_surf = font.render("FIX: " + hint, True, (100, 255, 150))
+            win.blit(hint_surf, (20, 95))
+
+            y = 125
+            for line in err_text.splitlines()[:18]:
+                surf = font.render(line[:95] + (".." if len(line) > 95 else ""), True, (230, 200, 200))
+                win.blit(surf, (20, y))
+                y += line_h
+
+            footer = font.render("ESC or close window to exit", True, (120, 100, 100))
+            win.blit(footer, (20, 398))
+            pygame.display.flip()
+
+        pygame.quit()
+    except Exception:
+        pass
+
+    # Always print to console
+    print("\n" + "=" * 60)
+    print("NEON RUSH - CRASH REPORT")
+    print("=" * 60)
+    if heal_actions:
+        print("AUTO-FIX ATTEMPTED:", "; ".join(heal_actions))
+    print("FIX:", hint)
+    print("-" * 60)
+    print(err_text)
+    print("=" * 60)
+
+
+def _preinit_heal():
+    """Run before pygame.init — file heals + evolve-based display hint."""
+    heal_highscores()
+    ev = evolve_load()
+    if ev.get("heals", {}).get("crash_display", {}).get("ok", 0) > 0:
+        os.environ.setdefault("SDL_VIDEODRIVER", "x11")
+
+
+def _init_pygame():
+    pygame.init()
+    pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
+
+
+if __name__ == "__main__":
+    _preinit_heal()
+
+_pygame_ok = False
+try:
+    _init_pygame()
+    _pygame_ok = True
+except Exception as e:
+    if __name__ == "__main__":
+        os.environ.setdefault("SDL_VIDEODRIVER", "x11")
+        try:
+            _init_pygame()
+            _pygame_ok = True
+        except Exception:
+            show_crash_screen(type(e), e, e.__traceback__, ["tried SDL_VIDEODRIVER=x11"])
+            sys.exit(1)
+    else:
+        raise
 
 # === Constants ===
 SCREEN_WIDTH = 800
@@ -42,8 +241,6 @@ STATE_PLAY = "play"
 STATE_PAUSED = "paused"
 STATE_GAMEOVER = "gameover"
 STATE_HIGHSCORE = "highscore"
-
-HIGHSCORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "highscores.json")
 
 
 # === Sound Generation ===
@@ -182,23 +379,37 @@ FONT_TITLE = load_font("freesans", 64, bold=True)
 FONT_SUBTITLE = load_font("dejavusans", 28)
 FONT_HUD = load_font("dejavusans", 20)
 FONT_HUD_SM = load_font("dejavusans", 16)
+FONT_HUD_SM_BOLD = load_font("dejavusans", 16, bold=True)
 FONT_HUD_LG = load_font("dejavusans", 36, bold=True)
 FONT_SCORE_ENTRY = load_font("dejavusans", 48, bold=True)
 FONT_POWERUP = load_font("dejavusans", 14, bold=True)
 
 
-# === High Scores ===
+# === High Scores (self-healing) ===
 def load_highscores():
     try:
         with open(HIGHSCORE_FILE, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+            data = json.load(f)
+        if isinstance(data, list) and all(isinstance(s, dict) and "name" in s and "score" in s for s in data):
+            return data
+        raise ValueError("Invalid structure")
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, KeyError):
+        heal_highscores()
         return []
 
 
 def save_highscores(scores):
-    with open(HIGHSCORE_FILE, "w") as f:
-        json.dump(scores[:5], f)
+    safe = [{"name": str(s.get("name", "???")[:3]), "score": int(s.get("score", 0))} for s in scores[:5]]
+    try:
+        with open(HIGHSCORE_FILE, "w") as f:
+            json.dump(safe, f)
+    except (PermissionError, OSError):
+        try:
+            alt = os.path.join(_BASE_DIR, "highscores_backup.json")
+            with open(alt, "w") as f:
+                json.dump(safe, f)
+        except Exception:
+            pass
 
 
 def is_highscore(score):
@@ -207,7 +418,7 @@ def is_highscore(score):
 
 
 # === Utilities ===
-def draw_panel(surface, rect, color=(0, 0, 0, 180), border_color=NEON_CYAN, border=2):
+def draw_panel(surface, rect, color=(0, 0, 0, 200), border_color=NEON_CYAN, border=2):
     panel = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
     pygame.draw.rect(panel, color, (0, 0, rect.w, rect.h))
     pygame.draw.rect(panel, border_color, (0, 0, rect.w, rect.h), border)
@@ -352,22 +563,24 @@ class MilestoneTracker:
 class Particle(pygame.sprite.Sprite):
     def __init__(self, x, y, color, vel=None, life=60, size=3):
         super().__init__()
-        self.image = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
-        col = color if len(color) == 4 else color + (128,)
-        pygame.draw.circle(self.image, col, (size, size), size)
+        self.image = pygame.Surface((size * 2 + 2, size * 2 + 2), pygame.SRCALPHA)
+        col = color if len(color) == 4 else (*color[:3], 180)
+        c = size + 1
+        pygame.draw.circle(self.image, col, (c, c), size)
         self.rect = self.image.get_rect(center=(x, y))
-        self.vel = vel or [random.uniform(-2, 2), random.uniform(-1, 1)]
+        self.vel = list(vel) if vel else [random.uniform(-2, 2), random.uniform(-1, 1)]
         self.life = self.max_life = life
 
     def update(self):
         self.rect.x += self.vel[0]
         self.rect.y += self.vel[1]
-        self.vel[0] *= 0.98
-        self.vel[1] *= 0.98
+        self.vel[0] *= 0.97
+        self.vel[1] *= 0.97
         self.life -= 1
-        alpha = int(255 * (self.life / self.max_life))
+        t = self.life / self.max_life
+        alpha = int(255 * (t * t))
         self.image.set_alpha(alpha)
-        if self.life <= 0 or not (-50 < self.rect.x < SCREEN_WIDTH + 50 and -50 < self.rect.y < SCREEN_HEIGHT + 50):
+        if self.life <= 0 or not (-80 < self.rect.x < SCREEN_WIDTH + 80 and -80 < self.rect.y < SCREEN_HEIGHT + 80):
             self.kill()
 
 
@@ -400,16 +613,18 @@ class ParticleSystem:
 
 # === Vehicle ===
 def make_vehicle_surface(color_main, color_accent, is_ghost=False):
-    surf = pygame.Surface((36, 56), pygame.SRCALPHA)
+    surf = pygame.Surface((40, 60), pygame.SRCALPHA)
     alpha = 140 if is_ghost else 255
-    cx, cy = 18, 28
-    body = [(cx, 4), (cx + 14, cy + 16), (cx + 10, cy + 22), (cx - 10, cy + 22), (cx - 14, cy + 16)]
+    cx, cy = 20, 30
+    body = [(cx, 2), (cx + 16, cy + 14), (cx + 12, cy + 26), (cx - 12, cy + 26), (cx - 16, cy + 14)]
+    shadow = [(cx + 2, 4), (cx + 16, cy + 14), (cx + 10, cy + 24), (cx - 10, cy + 24), (cx - 14, cy + 14)]
     pygame.draw.polygon(surf, (*color_main, alpha), body)
-    inner = [(cx, 8), (cx + 10, cy + 12), (cx + 7, cy + 18), (cx - 7, cy + 18), (cx - 10, cy + 12)]
-    pygame.draw.polygon(surf, (*color_accent, alpha), inner)
-    pygame.draw.lines(surf, (*color_accent, min(255, alpha + 50)), True, body, 2)
-    pygame.draw.ellipse(surf, (*SOLAR_WHITE, alpha // 3), (cx - 5, 12, 10, 14))
-    pygame.draw.rect(surf, (*DESERT_ORANGE, alpha // 2), (cx - 6, cy + 20, 12, 4))
+    pygame.draw.polygon(surf, (*color_accent, int(alpha * 0.4)), shadow)
+    inner = [(cx, 10), (cx + 10, cy + 8), (cx + 6, cy + 20), (cx - 6, cy + 20), (cx - 10, cy + 8)]
+    pygame.draw.polygon(surf, (*color_accent, int(alpha * 0.6)), inner)
+    pygame.draw.lines(surf, (*color_accent, min(255, alpha + 40)), True, body, 2)
+    pygame.draw.ellipse(surf, (*SOLAR_WHITE, alpha // 2), (cx - 6, 14, 12, 16))
+    pygame.draw.ellipse(surf, (*DESERT_ORANGE, alpha // 3), (cx - 7, cy + 18, 14, 6))
     return surf
 
 
@@ -476,6 +691,27 @@ class Player(pygame.sprite.Sprite):
         self.slowmo_timer = 0
         self.alive = True
         self.name = f"P{player_num}"
+        self.leap_request = 0
+        self.last_tap_left = 0
+        self.last_tap_right = 0
+        self.leap_cooldown = 0
+        self.LEAP_DISTANCE = 90
+        self.LEAP_COOLDOWN_FRAMES = 30
+        self.DOUBLE_TAP_MS = 350
+
+    def on_direction_tap(self, direction, now_ms, is_new_press):
+        if not self.alive or not is_new_press or self.leap_cooldown > 0:
+            return
+        if direction < 0:
+            if now_ms - self.last_tap_left < self.DOUBLE_TAP_MS:
+                self.leap_request = -1
+                self.leap_cooldown = self.LEAP_COOLDOWN_FRAMES
+            self.last_tap_left = now_ms
+        else:
+            if now_ms - self.last_tap_right < self.DOUBLE_TAP_MS:
+                self.leap_request = 1
+                self.leap_cooldown = self.LEAP_COOLDOWN_FRAMES
+            self.last_tap_right = now_ms
 
     def _any_key(self, keys, key_list):
         return any(keys[k] for k in key_list)
@@ -485,6 +721,18 @@ class Player(pygame.sprite.Sprite):
             return
 
         spd_m = 0.5 if slowmo_active else 1.0
+
+        if self.leap_cooldown > 0:
+            self.leap_cooldown -= 1
+
+        if self.leap_request != 0:
+            dx = self.leap_request * self.LEAP_DISTANCE
+            self.rect.x = max(ROAD_LEFT + 5, min(self.rect.x + dx, ROAD_RIGHT - self.rect.width - 5))
+            for _ in range(8):
+                vx = random.uniform(-2, 2) - self.leap_request * 3
+                self.particles.emit(self.rect.centerx, self.rect.centery, self.color_accent, [vx, random.uniform(-1, 1)], life=25, size=2)
+            SFX["boost"].play()
+            self.leap_request = 0
 
         if self._any_key(keys, self.keys_left):
             self.rect.x -= int(5 * spd_m)
@@ -599,17 +847,19 @@ class Coin(pygame.sprite.Sprite):
     def __init__(self):
         super().__init__()
         self.pulse = random.randint(0, 60)
-        self.image = pygame.Surface((24, 24), pygame.SRCALPHA)
+        self.image = pygame.Surface((28, 28), pygame.SRCALPHA)
         self._draw()
         self.rect = self.image.get_rect(center=(random.randint(ROAD_LEFT + 30, ROAD_RIGHT - 30), -20))
         self.base_speed = 2
 
     def _draw(self):
         self.image.fill((0, 0, 0, 0))
-        p = 0.7 + 0.3 * math.sin(self.pulse * 0.12)
-        pygame.draw.circle(self.image, (*COIN_GOLD, int(60 * p)), (12, 12), 12)
-        pygame.draw.circle(self.image, COIN_GOLD, (12, 12), 8)
-        pygame.draw.circle(self.image, (255, 240, 150), (12, 12), 5)
+        p = 0.75 + 0.25 * math.sin(self.pulse * 0.12)
+        cx, cy = 14, 14
+        pygame.draw.circle(self.image, (*COIN_GOLD, int(60 * p)), (cx, cy), 13)
+        pygame.draw.circle(self.image, COIN_GOLD, (cx, cy), 9)
+        pygame.draw.circle(self.image, (255, 245, 180), (cx, cy), 5)
+        pygame.draw.circle(self.image, (255, 230, 100), (cx, cy), 9, 1)
 
     def update(self, scroll_speed, players=None):
         self.pulse += 1
@@ -642,18 +892,20 @@ class PowerUp(pygame.sprite.Sprite):
         self.kind = kind or random.choice([POWERUP_SHIELD, POWERUP_MAGNET, POWERUP_SLOWMO])
         self.color = POWERUP_COLORS[self.kind]
         self.pulse = random.randint(0, 60)
-        self.image = pygame.Surface((32, 32), pygame.SRCALPHA)
+        self.image = pygame.Surface((38, 38), pygame.SRCALPHA)
         self._draw()
         self.rect = self.image.get_rect(center=(random.randint(ROAD_LEFT + 30, ROAD_RIGHT - 30), -30))
 
     def _draw(self):
         self.image.fill((0, 0, 0, 0))
-        p = 0.6 + 0.4 * math.sin(self.pulse * 0.1)
-        pygame.draw.circle(self.image, (*self.color, int(50 * p)), (16, 16), 16)
-        pygame.draw.circle(self.image, self.color, (16, 16), 12, 2)
-        pygame.draw.circle(self.image, (*self.color, 120), (16, 16), 10)
+        p = 0.65 + 0.35 * math.sin(self.pulse * 0.1)
+        cx = 19
+        for r, a in [(18, int(45 * p)), (14, 80)]:
+            pygame.draw.circle(self.image, (*self.color, a), (cx, cx), r)
+        pygame.draw.circle(self.image, self.color, (cx, cx), 12, 2)
+        pygame.draw.circle(self.image, (*self.color, 180), (cx, cx), 9)
         label = FONT_POWERUP.render(POWERUP_LABELS[self.kind], True, WHITE)
-        self.image.blit(label, (16 - label.get_width() // 2, 16 - label.get_height() // 2))
+        self.image.blit(label, (cx - label.get_width() // 2, cx - label.get_height() // 2))
 
     def update(self, scroll_speed):
         self.pulse += 1
@@ -668,14 +920,24 @@ class Obstacle(pygame.sprite.Sprite):
     def __init__(self, difficulty=1.0):
         super().__init__()
         size = random.choice([28, 36, 44])
-        self.image = pygame.Surface((size, size), pygame.SRCALPHA)
-        cx, cy = size // 2, size // 2
-        pts = [(cx, 4), (size - 6, cy), (cx, size - 4), (6, cy)]
-        pygame.draw.polygon(self.image, DESERT_ORANGE, pts)
-        pygame.draw.polygon(self.image, SAND_YELLOW, pts, 2)
-        pygame.draw.lines(self.image, NEON_MAGENTA, True, pts, 1)
+        self.size = size
+        self.image = pygame.Surface((size + 6, size + 6), pygame.SRCALPHA)
+        self._draw()
         self.rect = self.image.get_rect(center=(random.randint(ROAD_LEFT + 20, ROAD_RIGHT - 20), -40))
         self.speed = random.uniform(2, 4) * difficulty
+        self.pulse = random.randint(0, 100)
+
+    def _draw(self):
+        self.image.fill((0, 0, 0, 0))
+        s, cx = self.size, (self.size + 6) // 2
+        pts = [(cx, 6), (cx + s // 2 - 4, cx), (cx, s - 2), (cx - s // 2 + 4, cx)]
+        for i in range(2, 0, -1):
+            scale = 0.9 + i * 0.15
+            outer = [(cx + (p[0] - cx) * scale, cx + (p[1] - cx) * scale) for p in pts]
+            pygame.draw.polygon(self.image, (*NEON_MAGENTA, 20 + i * 8), outer)
+        pygame.draw.polygon(self.image, (180, 90, 25), pts)
+        pygame.draw.polygon(self.image, SAND_YELLOW, pts, 2)
+        pygame.draw.lines(self.image, NEON_MAGENTA, True, pts, 1)
 
     def update(self, scroll_speed):
         self.rect.y += scroll_speed + self.speed
@@ -687,11 +949,11 @@ class Obstacle(pygame.sprite.Sprite):
 class SolarFlare(pygame.sprite.Sprite):
     def __init__(self, particles, x):
         super().__init__()
-        r = 24
+        r = 26
         self.radius = r
         self.pulse = 0
-        self.image = pygame.Surface((r * 2 + 16, r * 2 + 16), pygame.SRCALPHA)
-        self.rect = pygame.Rect(x - r - 8, -60, (r + 8) * 2, (r + 8) * 2)
+        self.image = pygame.Surface((r * 2 + 24, r * 2 + 24), pygame.SRCALPHA)
+        self.rect = pygame.Rect(x - r - 12, -60, (r + 12) * 2, (r + 12) * 2)
         self.active = True
         self.particles = particles
         self.base_speed = 3
@@ -700,13 +962,13 @@ class SolarFlare(pygame.sprite.Sprite):
     def _redraw(self):
         r = self.radius
         self.image.fill((0, 0, 0, 0))
-        cx, cy = r + 8, r + 8
-        p = 0.8 + 0.2 * math.sin(self.pulse * 0.15)
-        for i in range(3, 0, -1):
-            a = int(30 * p * (3 - i))
-            pygame.draw.circle(self.image, (*SOLAR_YELLOW, a), (cx, cy), int(r + i * 5))
-        pygame.draw.circle(self.image, (255, 255, 200, int(100 * p)), (cx, cy), r)
-        pygame.draw.circle(self.image, (255, 255, 0, 220), (cx, cy), r - 3)
+        cx, cy = r + 12, r + 12
+        p = 0.82 + 0.18 * math.sin(self.pulse * 0.12)
+        for i in range(4, 0, -1):
+            a = int(35 * p * (4 - i) / 4)
+            pygame.draw.circle(self.image, (*SOLAR_YELLOW, a), (cx, cy), int(r + i * 6))
+        pygame.draw.circle(self.image, (255, 255, 220, int(120 * p)), (cx, cy), r)
+        pygame.draw.circle(self.image, (255, 255, 100, 240), (cx, cy), r - 4)
 
     def update(self, scroll_speed, players):
         if not self.active:
@@ -739,12 +1001,12 @@ class SolarFlare(pygame.sprite.Sprite):
 
 
 # === Background ===
-ROAD_COLOR = (40, 40, 50)
+ROAD_COLOR = (35, 35, 48)
 ROAD_EDGE_COLOR = NEON_CYAN
-ROAD_SHOULDER = (80, 50, 20)
-DESERT_BG = (140, 65, 18)
-DASH_LENGTH = 40
-DASH_GAP = 30
+ROAD_SHOULDER = (75, 45, 18)
+DESERT_BG = (130, 58, 15)
+DASH_LENGTH = 42
+DASH_GAP = 32
 
 
 class Background:
@@ -759,10 +1021,12 @@ class Background:
         dash_period = DASH_LENGTH + DASH_GAP
 
         screen.fill(DESERT_BG)
-        pygame.draw.rect(screen, ROAD_SHOULDER, (ROAD_LEFT - 20, 0, ROAD_WIDTH + 40, SCREEN_HEIGHT))
+        pygame.draw.rect(screen, ROAD_SHOULDER, (ROAD_LEFT - 24, 0, ROAD_WIDTH + 48, SCREEN_HEIGHT))
         pygame.draw.rect(screen, ROAD_COLOR, (ROAD_LEFT, 0, ROAD_WIDTH, SCREEN_HEIGHT))
-        pygame.draw.line(screen, ROAD_EDGE_COLOR, (ROAD_LEFT, 0), (ROAD_LEFT, SCREEN_HEIGHT), 3)
-        pygame.draw.line(screen, ROAD_EDGE_COLOR, (ROAD_RIGHT, 0), (ROAD_RIGHT, SCREEN_HEIGHT), 3)
+        pygame.draw.line(screen, (20, 120, 150), (ROAD_LEFT, 0), (ROAD_LEFT, SCREEN_HEIGHT), 4)
+        pygame.draw.line(screen, ROAD_EDGE_COLOR, (ROAD_LEFT, 0), (ROAD_LEFT, SCREEN_HEIGHT), 2)
+        pygame.draw.line(screen, (20, 120, 150), (ROAD_RIGHT, 0), (ROAD_RIGHT, SCREEN_HEIGHT), 4)
+        pygame.draw.line(screen, ROAD_EDGE_COLOR, (ROAD_RIGHT, 0), (ROAD_RIGHT, SCREEN_HEIGHT), 2)
 
         offset = int(self.scroll_y) % dash_period
         y = -DASH_LENGTH + offset
@@ -773,10 +1037,9 @@ class Background:
         for lane_x in [ROAD_LEFT + ROAD_WIDTH // 4, ROAD_LEFT + 3 * ROAD_WIDTH // 4]:
             y = -DASH_LENGTH + offset
             while y < SCREEN_HEIGHT + DASH_LENGTH:
-                pygame.draw.line(screen, (70, 70, 90), (lane_x, y), (lane_x, y + DASH_LENGTH // 2), 1)
+                pygame.draw.line(screen, (65, 65, 88), (lane_x, y), (lane_x, y + DASH_LENGTH // 2), 1)
                 y += dash_period
 
-        # Speed lines at high velocity
         if speed > 8:
             intensity = min(30, int((speed - 8) * 12))
             line_surf = pygame.Surface((2, int(speed * 4)), pygame.SRCALPHA)
@@ -800,9 +1063,10 @@ class Background:
 # === HUD ===
 def draw_lives_icons(screen, player, x, y):
     for i in range(player.max_lives):
-        color = player.color_accent if i < player.lives else (50, 50, 60)
-        cx = x + i * 22 + 8
-        pts = [(cx, y), (cx + 6, y + 12), (cx - 6, y + 12)]
+        color = player.color_accent if i < player.lives else (45, 45, 55)
+        cx = x + i * 24 + 10
+        pts = [(cx, y + 2), (cx + 7, y + 14), (cx - 7, y + 14)]
+        pygame.draw.polygon(screen, (30, 30, 35), [(p[0] + 1, p[1] + 1) for p in pts])
         pygame.draw.polygon(screen, color, pts)
 
 
@@ -822,11 +1086,14 @@ def draw_hud(screen, players, game_distance, flare_timer, two_player):
 
         heat_pct = min(100, int(player.heat))
         bar_w = 170
-        pygame.draw.rect(screen, (40, 40, 50), (px + 10, 36, bar_w, 10))
+        bar_h = 12
+        pygame.draw.rect(screen, (32, 32, 42), (px + 10, 34, bar_w, bar_h))
         fill_w = int(bar_w * heat_pct / 100)
         if fill_w > 0:
             bar_col = NEON_MAGENTA if heat_pct > 80 else player.color_accent
-            pygame.draw.rect(screen, bar_col, (px + 10, 36, fill_w, 10))
+            pygame.draw.rect(screen, bar_col, (px + 10, 34, fill_w, bar_h))
+            if heat_pct >= 100:
+                pygame.draw.rect(screen, SOLAR_WHITE, (px + 10, 34, fill_w, bar_h), 1)
 
         spd = FONT_HUD_SM.render(f"{int(player.speed * 10)} km/h", True, SOLAR_WHITE)
         screen.blit(spd, (px + 10, 50))
@@ -865,12 +1132,12 @@ def draw_hud(screen, players, game_distance, flare_timer, two_player):
 # === Screens ===
 def draw_title(screen, tick, selected_diff=DIFF_NORMAL):
     t = (tick % 180) / 180
-    r = int(15 + 10 * math.sin(t * math.pi * 2))
-    g = int(5 + 5 * math.sin(t * math.pi * 2 + 0.5))
-    b = int(30 + 20 * math.sin(t * math.pi * 2 + 1))
+    r = int(18 + 12 * math.sin(t * math.pi * 2))
+    g = int(8 + 6 * math.sin(t * math.pi * 2 + 0.5))
+    b = int(35 + 22 * math.sin(t * math.pi * 2 + 1))
     screen.fill((r, g, b))
 
-    pygame.draw.rect(screen, (30, 30, 40), (ROAD_LEFT, 0, ROAD_WIDTH, SCREEN_HEIGHT))
+    pygame.draw.rect(screen, (28, 28, 38), (ROAD_LEFT, 0, ROAD_WIDTH, SCREEN_HEIGHT))
     offset = int(tick * 2) % (DASH_LENGTH + DASH_GAP)
     y = -DASH_LENGTH + offset
     while y < SCREEN_HEIGHT:
@@ -900,17 +1167,22 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL):
     screen.blit(diff_label, (SCREEN_WIDTH // 2 - 130, diff_y))
     for i, d in enumerate([DIFF_EASY, DIFF_NORMAL, DIFF_HARD]):
         ds = DIFFICULTY_SETTINGS[d]
-        key_str = f"[{i + 3}]" if selected_diff != d else f">{ds['label']}<"
-        color = ds["color"] if selected_diff == d else (100, 100, 120)
-        dt = FONT_HUD_SM.render(f"{key_str} {ds['label']}" if selected_diff != d else key_str, True, color)
+        is_selected = selected_diff == d
+        key_str = f"[{i + 3}]" if not is_selected else ">"
+        text = f"{key_str} {ds['label']}" if not is_selected else f"{key_str}{ds['label']}<"
+        color = ds["color"] if is_selected else (100, 100, 120)
+        font = FONT_HUD_SM_BOLD if is_selected else FONT_HUD_SM
+        dt = font.render(text, True, color)
         screen.blit(dt, (SCREEN_WIDTH // 2 - 40 + i * 80, diff_y))
 
     c1 = FONT_HUD_SM.render("P1: WASD + L.Shift   Solo: WASD/Arrows + Shift/Space", True, (120, 120, 140))
-    screen.blit(c1, (SCREEN_WIDTH // 2 - c1.get_width() // 2, 360))
+    screen.blit(c1, (SCREEN_WIDTH // 2 - c1.get_width() // 2, 355))
+    c0 = FONT_HUD_SM.render("Double-tap ← or → = Quick leap (dodge)", True, SLOWMO_GREEN)
+    screen.blit(c0, (SCREEN_WIDTH // 2 - c0.get_width() // 2, 375))
     c2 = FONT_HUD_SM.render("P2: Arrows + R.Shift boost", True, NEON_MAGENTA)
-    screen.blit(c2, (SCREEN_WIDTH // 2 - c2.get_width() // 2, 380))
+    screen.blit(c2, (SCREEN_WIDTH // 2 - c2.get_width() // 2, 395))
     c3 = FONT_HUD_SM.render("P = Pause   F11 = Fullscreen   F2 = 2x Scale", True, (100, 100, 120))
-    screen.blit(c3, (SCREEN_WIDTH // 2 - c3.get_width() // 2, 405))
+    screen.blit(c3, (SCREEN_WIDTH // 2 - c3.get_width() // 2, 420))
 
     scores = load_highscores()
     if scores:
@@ -1128,6 +1400,7 @@ def main():
             music_channel.play(music_loop, loops=-1)
             music_channel.set_volume(0.08)
 
+    prev_keys = pygame.key.get_pressed()
     running = True
     while running:
         for event in pygame.event.get():
@@ -1165,6 +1438,19 @@ def main():
                             engine_channel.fadeout(200)
                         if music_channel.get_busy():
                             music_channel.fadeout(300)
+                    else:
+                        is_new = prev_keys is None or not prev_keys[event.key]
+                        now_ms = pygame.time.get_ticks()
+                        if event.key in (pygame.K_LEFT, pygame.K_a):
+                            for p in players:
+                                if p.alive and event.key in p.keys_left:
+                                    p.on_direction_tap(-1, now_ms, is_new)
+                                    break
+                        elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                            for p in players:
+                                if p.alive and event.key in p.keys_right:
+                                    p.on_direction_tap(1, now_ms, is_new)
+                                    break
 
                 elif state == STATE_PAUSED:
                     if event.key == pygame.K_p:
@@ -1348,10 +1634,10 @@ def main():
             # Shield bubble
             for p in alive_players:
                 if p.shield:
-                    shield_surf = pygame.Surface((50, 70), pygame.SRCALPHA)
-                    pulse = 0.6 + 0.4 * math.sin(tick * 0.1)
-                    pygame.draw.ellipse(shield_surf, (*SHIELD_BLUE, int(40 * pulse)), (0, 0, 50, 70), 2)
-                    screen.blit(shield_surf, (p.rect.centerx - 25, p.rect.centery - 35))
+                    shield_surf = pygame.Surface((54, 76), pygame.SRCALPHA)
+                    pulse = 0.65 + 0.35 * math.sin(tick * 0.08)
+                    pygame.draw.ellipse(shield_surf, (*SHIELD_BLUE, int(50 * pulse)), (0, 0, 54, 76), 2)
+                    screen.blit(shield_surf, (p.rect.centerx - 27, p.rect.centery - 38))
 
             # Slowmo tint
             if any_slowmo:
@@ -1421,6 +1707,7 @@ def main():
             )
         pygame.display.flip()
         clock.tick(FPS)
+        prev_keys = keys
         tick += 1
 
     pygame.quit()
@@ -1428,4 +1715,25 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    _heal_actions = preflight_heal()
+
+    def _run():
+        main()
+
+    _retried = False
+    while True:
+        try:
+            _run()
+            break
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            fixed, actions = crash_heal(exc_type, exc_value, exc_tb)
+            _heal_actions.extend(actions)
+
+            if fixed and not _retried:
+                _retried = True
+                continue
+            show_crash_screen(exc_type, exc_value, exc_tb, _heal_actions)
+            sys.exit(1)
