@@ -97,30 +97,47 @@ class MilestoneTracker:
 
 
 class HighScoreEntry:
-    def __init__(self, score):
+    def __init__(self, score, auto_type=False):
         self.score = score
         self.name = ""
         self.done = False
+        self.auto_type = auto_type
+        self._auto_frame = 0
 
     def handle_event(self, event):
         from core.fonts import FONT_SCORE_ENTRY
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_RETURN and len(self.name) > 0:
-                scores = load_highscores()
-                scores.append({"name": self.name, "score": self.score})
-                scores.sort(key=lambda s: s["score"], reverse=True)
-                save_highscores(scores[:5])
-                SFX["highscore"].play()
-                self.done = True
+                self._commit()
             elif event.key == pygame.K_BACKSPACE:
                 self.name = self.name[:-1]
             elif len(self.name) < 3 and event.unicode.isalnum():
                 self.name += event.unicode.upper()
                 SFX["select"].play()
 
+    def _commit(self):
+        scores = load_highscores()
+        scores.append({"name": self.name, "score": self.score})
+        scores.sort(key=lambda s: s["score"], reverse=True)
+        save_highscores(scores[:5])
+        SFX["highscore"].play()
+        self.done = True
+
     def draw(self, screen, tick):
         from core.fonts import FONT_HUD_LG, FONT_SUBTITLE, FONT_HUD, FONT_HUD_SM, FONT_SCORE_ENTRY
         from core.constants import WHITE
+
+        # Auto-type logic: inject "AI" then confirm
+        if self.auto_type and not self.done:
+            self._auto_frame += 1
+            if self._auto_frame == 30 and len(self.name) < 1:
+                self.name += "A"
+                SFX["select"].play()
+            elif self._auto_frame == 60 and len(self.name) < 2:
+                self.name += "I"
+                SFX["select"].play()
+            elif self._auto_frame == 90 and len(self.name) >= 2:
+                self._commit()
 
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 200))
@@ -154,12 +171,13 @@ class HighScoreEntry:
                 char = FONT_SCORE_ENTRY.render(display_name[i], True, SOLAR_WHITE)
                 screen.blit(char, (bx + 23 - char.get_width() // 2, by + 4))
 
-        hint = FONT_HUD_SM.render("ENTER to confirm", True, (120, 120, 140))
+        hint_text = "AI typing..." if self.auto_type else "ENTER to confirm"
+        hint = FONT_HUD_SM.render(hint_text, True, (120, 120, 140))
         screen.blit(hint, (SCREEN_WIDTH // 2 - hint.get_width() // 2, py + 215))
 
 
 def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
-               loop_count=0, ai_frames=0):
+               loop_count=0, ai_frames=0, target_fps=144):
     from core.fonts import FONT_TITLE, FONT_SUBTITLE, FONT_HUD, FONT_HUD_SM, FONT_HUD_SM_BOLD
 
     t = (tick % 180) / 180
@@ -241,20 +259,30 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
         off_label = FONT_HUD_SM.render("x1 (off)", True, (100, 100, 120))
         screen.blit(off_label, (cx + 220, ai_y))
 
+    # FPS cap row
+    fps_y = 330
+    fps_label = FONT_HUD_SM.render("Max FPS:", True, (150, 150, 170))
+    screen.blit(fps_label, (cx - 150, fps_y))
+    fps_display = "UNL" if target_fps == 0 else str(target_fps)
+    fps_val_t = FONT_HUD_SM_BOLD.render(f"< {fps_display} >", True, NEON_CYAN)
+    screen.blit(fps_val_t, (cx - fps_val_t.get_width() // 2, fps_y))
+    fps_hint = FONT_HUD_SM.render("(UP/DOWN)", True, (100, 100, 120))
+    screen.blit(fps_hint, (cx + fps_val_t.get_width() // 2 + 6, fps_y))
+
     # Controls hints (condensed)
     c1 = FONT_HUD_SM.render("P1: WASD + Shift   Solo: WASD/Arrows   P2: Arrows + R.Shift", True, (120, 120, 140))
-    screen.blit(c1, (cx - c1.get_width() // 2, 345))
+    screen.blit(c1, (cx - c1.get_width() // 2, 365))
     c0 = FONT_HUD_SM.render("Double-tap < or > = Leap   E/Enter = Heat bolt   P = Pause", True, SLOWMO_GREEN)
-    screen.blit(c0, (cx - c0.get_width() // 2, 363))
+    screen.blit(c0, (cx - c0.get_width() // 2, 383))
 
     # High scores
     scores = load_highscores()
     if scores:
         hs = FONT_HUD_SM.render("HIGH SCORES", True, COIN_GOLD)
-        screen.blit(hs, (cx - hs.get_width() // 2, 420))
+        screen.blit(hs, (cx - hs.get_width() // 2, 440))
         for i, entry in enumerate(scores[:3]):
             txt = FONT_HUD_SM.render(f"{i + 1}. {entry['name']} - {entry['score']}", True, SOLAR_WHITE)
-            screen.blit(txt, (cx - txt.get_width() // 2, 440 + i * 20))
+            screen.blit(txt, (cx - txt.get_width() // 2, 460 + i * 20))
 
     # Loop / AI counter in banner area
     if loop_count > 0 or ai_frames > 0:
@@ -263,7 +291,7 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
             parts.append(f"AI Frames: {ai_frames:,}")
         counter_str = "  |  ".join(parts)
         ct = FONT_HUD_SM.render(counter_str, True, (80, 120, 80))
-        screen.blit(ct, (cx - ct.get_width() // 2, 508))
+        screen.blit(ct, (cx - ct.get_width() // 2, 528))
 
     # Footer
     foot = FONT_HUD_SM.render("ESC = Quit   F11 = Fullscreen   F2 = 2x Scale", True, (80, 80, 100))
@@ -287,15 +315,18 @@ def draw_paused(screen):
     screen.blit(q, (SCREEN_WIDTH // 2 - q.get_width() // 2, py + 120))
 
 
-def draw_gameover(screen, players, game_distance, tick, two_player):
+def draw_gameover(screen, players, game_distance, tick, two_player,
+                  fps_snapshots=None, fps_total_frames=0):
     from core.fonts import FONT_TITLE, FONT_HUD, FONT_HUD_SM
 
     overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, 200))
     screen.blit(overlay, (0, 0))
 
+    has_graph = fps_snapshots and len(fps_snapshots) >= 2
+    extra_h = 100 if has_graph else 0
     pw = 420
-    ph = 300 if two_player else 260
+    ph = (300 if two_player else 260) + extra_h
     px, py = (SCREEN_WIDTH - pw) // 2, (SCREEN_HEIGHT - ph) // 2 - 20
     draw_panel(screen, pygame.Rect(px, py, pw, ph), (0, 0, 20, 220), NEON_MAGENTA, 3)
 
@@ -321,6 +352,41 @@ def draw_gameover(screen, players, game_distance, tick, two_player):
             winner = players[0] if players[0].score > players[1].score else players[1]
             wt = FONT_HUD.render(f"{winner.name} WINS!", True, winner.color_accent)
             screen.blit(wt, (SCREEN_WIDTH // 2 - wt.get_width() // 2, y_off))
+
+    # FPS mini graph
+    if has_graph:
+        graph_w, graph_h = 220, 70
+        graph_x = SCREEN_WIDTH // 2 - graph_w // 2
+        graph_y = py + ph - 145
+        # Background
+        pygame.draw.rect(screen, (15, 15, 25), (graph_x, graph_y, graph_w, graph_h))
+        pygame.draw.rect(screen, (60, 60, 80), (graph_x, graph_y, graph_w, graph_h), 1)
+
+        max_fps = max(s[1] for s in fps_snapshots)
+        max_time = max(s[0] for s in fps_snapshots)
+        if max_fps > 0 and max_time > 0:
+            points = []
+            for sec, avg in fps_snapshots:
+                gx = graph_x + int((sec / max_time) * (graph_w - 4)) + 2
+                gy = graph_y + graph_h - 2 - int((avg / max_fps) * (graph_h - 4))
+                points.append((gx, gy))
+            if len(points) >= 2:
+                # Draw line segments colored by FPS quality
+                for j in range(len(points) - 1):
+                    avg_fps = fps_snapshots[j][1]
+                    if avg_fps >= 55:
+                        seg_color = (60, 200, 60)
+                    elif avg_fps >= 30:
+                        seg_color = (255, 200, 50)
+                    else:
+                        seg_color = (255, 50, 40)
+                    pygame.draw.line(screen, seg_color, points[j], points[j + 1], 2)
+
+        # Label
+        frames_t = FONT_HUD_SM.render(f"Frames: {fps_total_frames:,}", True, (120, 120, 140))
+        screen.blit(frames_t, (graph_x, graph_y + graph_h + 2))
+        fps_label = FONT_HUD_SM.render("FPS", True, (80, 80, 100))
+        screen.blit(fps_label, (graph_x + graph_w - fps_label.get_width(), graph_y + graph_h + 2))
 
     blink = (tick // 30) % 2
     if blink:
