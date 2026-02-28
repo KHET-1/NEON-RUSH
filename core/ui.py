@@ -178,7 +178,7 @@ class HighScoreEntry:
 
 def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
                loop_count=0, ai_frames=0, target_fps=144, dashboard=None,
-               evolution_mgr=None):
+               evolution_mgr=None, vsync=True):
     from core.fonts import FONT_TITLE, FONT_SUBTITLE, FONT_HUD, FONT_HUD_SM, FONT_HUD_SM_BOLD
 
     t = (tick % 180) / 180
@@ -260,11 +260,14 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
         off_label = FONT_HUD_SM.render("x1 (off)", True, (100, 100, 120))
         screen.blit(off_label, (cx + 220, ai_y))
 
-    # FPS cap row
+    # Render FPS cap row + VSync indicator
     fps_y = 330
-    fps_label = FONT_HUD_SM.render("Max FPS:", True, (150, 150, 170))
+    fps_label = FONT_HUD_SM.render("Render:", True, (150, 150, 170))
     screen.blit(fps_label, (cx - 150, fps_y))
-    fps_display = "UNL" if target_fps == 0 else str(target_fps)
+    if vsync:
+        fps_display = "VSync" if target_fps == 0 else f"{target_fps} FPS + VSync"
+    else:
+        fps_display = "UNL" if target_fps == 0 else f"{target_fps} FPS"
     fps_val_t = FONT_HUD_SM_BOLD.render(f"< {fps_display} >", True, NEON_CYAN)
     screen.blit(fps_val_t, (cx - fps_val_t.get_width() // 2, fps_y))
     fps_hint = FONT_HUD_SM.render("(UP/DOWN)", True, (100, 100, 120))

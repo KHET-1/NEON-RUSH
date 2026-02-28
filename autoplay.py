@@ -590,12 +590,12 @@ class GameInstance:
         self.finished = False
         random.seed(time.time_ns() + slot_num * 12345)
 
-    def tick(self):
+    def sim_step(self):
+        """One fixed-timestep simulation step (no rendering)."""
         if self.finished:
             return False
 
-        import pygame
-        from core.constants import STATE_PLAY, STATE_TRANSITION, STATE_VICTORY, MODE_NAMES
+        from core.constants import STATE_PLAY, STATE_TRANSITION, STATE_VICTORY
 
         if self.state == STATE_PLAY:
             if self.god_mode and self.current_mode:
@@ -611,7 +611,6 @@ class GameInstance:
 
             if self.current_mode:
                 result = self.current_mode.update(self.fake_keys)
-                self.current_mode.draw(self.screen)
 
                 if result == 'gameover':
                     self.stats.deaths += 1
@@ -623,7 +622,6 @@ class GameInstance:
                                          -200, self.brain._prev_state, True)
                     if self.brain:
                         self.brain.end_episode(self.stats.final_score, self.stats.frames)
-                    self._draw_overlay("GAME OVER")
                 elif result == 'boss_defeated':
                     # Reward for boss kill
                     if self.brain and self.brain._prev_state is not None:
@@ -634,7 +632,6 @@ class GameInstance:
         elif self.state == STATE_TRANSITION:
             if self.transition:
                 self.transition.update()
-                self.transition.draw(self.screen)
                 if self.transition.done:
                     self.transition = None
                     if self.current_mode:
@@ -650,10 +647,33 @@ class GameInstance:
                     self.brain.learn(self.brain._prev_state, self.brain._prev_action,
                                      1000, self.brain._prev_state, True)
                 self.brain.end_episode(self.stats.final_score, self.stats.frames)
-            self._draw_overlay("VICTORY!")
 
         self.stats.frames += 1
         return not self.finished
+
+    def draw(self):
+        """Render current state to self.screen (once per display frame)."""
+        from core.constants import STATE_PLAY, STATE_TRANSITION, STATE_VICTORY
+
+        if self.state == STATE_PLAY:
+            if self.current_mode:
+                self.current_mode.draw(self.screen)
+            if self.finished:
+                self._draw_overlay("GAME OVER")
+        elif self.state == STATE_TRANSITION:
+            if self.transition:
+                self.transition.draw(self.screen)
+        elif self.state == STATE_VICTORY:
+            if self.current_mode:
+                self.current_mode.draw(self.screen)
+            if self.finished:
+                self._draw_overlay("VICTORY!")
+
+    def tick(self):
+        """Convenience: sim_step + draw (backwards compat)."""
+        alive = self.sim_step()
+        self.draw()
+        return alive
 
     def _advance_to_next_mode(self):
         from shared.transition import TransitionEffect
@@ -710,7 +730,7 @@ class GameInstance:
 def run_grid(args):
     from core.fonts import init_fonts
     from core.sound import init_sounds
-    from core.constants import FPS, NEON_CYAN, SOLAR_YELLOW
+    from core.constants import FPS, SIM_DT, SIM_RATE, NEON_CYAN, SOLAR_YELLOW
 
     init_fonts()
     init_sounds()
@@ -730,7 +750,9 @@ def run_grid(args):
         f"NEON RUSH — {'Learning' if args.learn else 'Autoplay'} Grid (6 games)")
 
     clock = pygame.time.Clock()
-    target_fps = FPS * args.speed
+    target_fps = min(144, SIM_RATE * args.speed)
+    effective_dt = SIM_DT / args.speed  # --speed 4 = 4x faster sim
+    accumulator = 0.0
 
     label_font = pygame.font.SysFont("freesans", 16, bold=True)
     title_font = pygame.font.SysFont("freesans", 20, bold=True)
@@ -746,6 +768,10 @@ def run_grid(args):
 
     running = True
     while running:
+        # Timing
+        frame_dt = clock.tick(target_fps) / 1000.0
+        accumulator = min(accumulator + frame_dt, effective_dt * 8)
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -753,12 +779,15 @@ def run_grid(args):
                 if event.key in (pygame.K_ESCAPE, pygame.K_q):
                     running = False
 
-        # Tick all games
-        any_alive = False
-        for g in games:
-            if not g.finished:
-                g.tick()
-                any_alive = True
+        # Fixed-timestep sim steps
+        while accumulator >= effective_dt:
+            for g in games:
+                if not g.finished:
+                    g.sim_step()
+            accumulator -= effective_dt
+
+        # Check alive status after sim
+        any_alive = any(not g.finished for g in games)
 
         # Auto-restart finished games in learning mode
         if args.learn and not any_alive:
@@ -776,7 +805,10 @@ def run_grid(args):
         if frame_count >= max_frames:
             running = False
 
-        # --- Draw the grid ---
+        # --- Render the grid (once per display frame) ---
+        for g in games:
+            g.draw()
+
         display.fill((10, 10, 20))
 
         elapsed = time.time() - total_start
@@ -828,7 +860,6 @@ def run_grid(args):
                              (x - 1, y + HEADER - 1, THUMB_W + 2, THUMB_H + 2), 1)
 
         pygame.display.flip()
-        clock.tick(target_fps)
         frame_count += 1
 
     # Save brain
@@ -879,7 +910,7 @@ def run_single(args, run_num, brain=None):
     from modes.excitebike import ExcitebikeMode
     from modes.micromachines import MicroMachinesMode
     from core.constants import (
-        SCREEN_WIDTH, SCREEN_HEIGHT, FPS,
+        SCREEN_WIDTH, SCREEN_HEIGHT, FPS, SIM_DT, SIM_RATE,
         STATE_PLAY, STATE_TRANSITION, STATE_VICTORY, MODE_NAMES,
     )
 
@@ -919,7 +950,9 @@ def run_single(args, run_num, brain=None):
     else:
         fake_keys = FakeKeys(args.players)
 
-    target_fps = FPS * args.speed
+    target_fps = min(144, SIM_RATE * args.speed) if not args.headless else 0
+    effective_dt = SIM_DT / args.speed
+    accumulator = 0.0
     max_frames = args.max_frames if args.max_frames > 0 else float('inf')
 
     def advance_to_next_mode():
@@ -955,62 +988,79 @@ def run_single(args, run_num, brain=None):
 
     running = True
     while running and stats.frames < max_frames:
+        # Timing
+        frame_dt = clock.tick(target_fps) / 1000.0
+        if args.headless:
+            # Headless: run one sim step per loop at max throughput
+            accumulator = effective_dt
+        else:
+            accumulator = min(accumulator + frame_dt, effective_dt * 8)
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
 
-        if state == STATE_PLAY:
-            if args.god and current_mode:
-                for p in current_mode.players:
-                    p.invincible_timer = max(p.invincible_timer, 10)
-                    p.lives = max(p.lives, 3)
+        # Fixed-timestep sim steps
+        while accumulator >= effective_dt:
+            if state == STATE_PLAY:
+                if args.god and current_mode:
+                    for p in current_mode.players:
+                        p.invincible_timer = max(p.invincible_timer, 10)
+                        p.lives = max(p.lives, 3)
 
-            boss_active = current_mode.boss_active if current_mode else False
-            fake_keys.tick(
-                mode=current_mode,
-                players=current_mode.players if current_mode else [],
-                boss_active=boss_active)
+                boss_active = current_mode.boss_active if current_mode else False
+                fake_keys.tick(
+                    mode=current_mode,
+                    players=current_mode.players if current_mode else [],
+                    boss_active=boss_active)
 
-            if current_mode:
-                result = current_mode.update(fake_keys)
-                current_mode.draw(screen)
+                if current_mode:
+                    result = current_mode.update(fake_keys)
 
-                if result == 'gameover':
-                    stats.deaths += 1
-                    stats.finish('GAME OVER', shared_state, current_mode)
-                    if brain:
-                        if brain._prev_state is not None:
+                    if result == 'gameover':
+                        stats.deaths += 1
+                        stats.finish('GAME OVER', shared_state, current_mode)
+                        if brain:
+                            if brain._prev_state is not None:
+                                brain.learn(brain._prev_state, brain._prev_action,
+                                            -200, brain._prev_state, True)
+                            brain.end_episode(stats.final_score, stats.frames)
+                        running = False
+                    elif result == 'boss_defeated':
+                        if brain and brain._prev_state is not None:
                             brain.learn(brain._prev_state, brain._prev_action,
-                                        -200, brain._prev_state, True)
-                        brain.end_episode(stats.final_score, stats.frames)
-                    running = False
-                elif result == 'boss_defeated':
-                    if brain and brain._prev_state is not None:
+                                        500, brain._prev_state, False)
+                        advance_to_next_mode()
+
+            elif state == STATE_TRANSITION:
+                if transition:
+                    transition.update()
+                    if transition.done:
+                        transition = None
+                        if current_mode:
+                            current_mode.setup()
+                            stats.modes_played.append(current_mode.MODE_NAME)
+                        state = STATE_PLAY
+
+            elif state == STATE_VICTORY:
+                stats.finish('VICTORY', shared_state, current_mode)
+                if brain:
+                    if brain._prev_state is not None:
                         brain.learn(brain._prev_state, brain._prev_action,
-                                    500, brain._prev_state, False)
-                    advance_to_next_mode()
+                                    1000, brain._prev_state, True)
+                    brain.end_episode(stats.final_score, stats.frames)
+                running = False
 
-        elif state == STATE_TRANSITION:
-            if transition:
-                transition.update()
-                transition.draw(screen)
-                if transition.done:
-                    transition = None
-                    if current_mode:
-                        current_mode.setup()
-                        stats.modes_played.append(current_mode.MODE_NAME)
-                    state = STATE_PLAY
+            stats.frames += 1
+            accumulator -= effective_dt
 
-        elif state == STATE_VICTORY:
-            stats.finish('VICTORY', shared_state, current_mode)
-            if brain:
-                if brain._prev_state is not None:
-                    brain.learn(brain._prev_state, brain._prev_action,
-                                1000, brain._prev_state, True)
-                brain.end_episode(stats.final_score, stats.frames)
-            running = False
-
+        # Render (once per display frame)
         if not args.headless:
+            if state == STATE_PLAY and current_mode:
+                current_mode.draw(screen)
+            elif state == STATE_TRANSITION and transition:
+                transition.draw(screen)
+
             ds = disp.display_surface
             if ds is not None:
                 sx, sy = shake.get_offset() if state == STATE_PLAY else (0, 0)
@@ -1025,9 +1075,6 @@ def run_single(args, run_num, brain=None):
                                      SCREEN_HEIGHT * disp.current_scale)),
                         (sx * disp.current_scale, sy * disp.current_scale))
                 pygame.display.flip()
-
-        clock.tick(target_fps if not args.headless else 0)
-        stats.frames += 1
 
         if args.verbose and stats.frames % 300 == 0:
             score = 0
@@ -1053,6 +1100,8 @@ def run_single(args, run_num, brain=None):
 # ══════════════════════════════════════════════════════════════════
 
 def main():
+    from core.constants import SIM_RATE
+
     args = parse_args()
 
     if args.headless:
@@ -1076,7 +1125,7 @@ def main():
         print(f"\n{'='*65}")
         print(f"  NEON RUSH — Grid Autoplay (6 games){learn_str}")
         print(f"{'='*65}")
-        print(f"  Speed:      {args.speed}x ({60 * args.speed} target FPS)")
+        print(f"  Speed:      {args.speed}x (sim {SIM_RATE * args.speed} Hz, render capped {min(144, SIM_RATE * args.speed)} FPS)")
         print(f"  Difficulty: EASY / NORMAL / HARD x 2")
         print(f"  Players:    {args.players}")
         if args.learn:
@@ -1097,7 +1146,7 @@ def main():
     print(f"  NEON RUSH — Autoplay Test{learn_str}")
     print(f"{'='*65}")
     print(f"  Mode:       {'HEADLESS' if args.headless else 'HEADED (visual)'}")
-    print(f"  Speed:      {args.speed}x ({60 * args.speed} target FPS)")
+    print(f"  Speed:      {args.speed}x (sim {SIM_RATE * args.speed} Hz)")
     print(f"  Runs:       {args.runs}")
     print(f"  Difficulty: {args.difficulty.upper()}")
     print(f"  Players:    {args.players}")

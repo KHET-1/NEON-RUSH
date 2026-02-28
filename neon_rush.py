@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core.healing import preinit_heal, preflight_heal, crash_heal
 from core.crash_report import session, generate_crash_report, show_crash_screen_v2
 from core.constants import (
-    SCREEN_WIDTH, SCREEN_HEIGHT, FPS, BLACK, NEON_CYAN, NEON_MAGENTA,
+    SCREEN_WIDTH, SCREEN_HEIGHT, FPS, SIM_DT, BLACK, NEON_CYAN, NEON_MAGENTA,
     SOLAR_YELLOW, SOLAR_WHITE, COIN_GOLD,
     STATE_TITLE, STATE_PLAY, STATE_PAUSED, STATE_GAMEOVER,
     STATE_HIGHSCORE, STATE_TRANSITION, STATE_VICTORY,
@@ -97,6 +97,10 @@ def main():
     had_ai_players = False
     continues_left = 3
     camp_anchors = {}  # id(player) -> (anchor_x, anchor_y, start_time)
+
+    # Fixed timestep accumulator
+    accumulator = 0.0
+    MAX_CATCHUP = 8  # cap sim steps per render to prevent spiral of death
 
     # Mode system
     shared_state = None
@@ -233,6 +237,13 @@ def main():
 
     running = True
     while running:
+        # === Phase 0: Timing ===
+        # VSync: GPU handles frame pacing, so tick(0). Otherwise software cap.
+        render_cap = 0 if disp.vsync_enabled else (target_fps if target_fps > 0 else 0)
+        frame_dt = clock.tick(render_cap) / 1000.0
+        accumulator = min(accumulator + frame_dt, SIM_DT * MAX_CATCHUP)
+
+        # === Phase 1: Events (once per render frame) ===
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -382,85 +393,105 @@ def main():
 
         keys = pygame.key.get_pressed()
 
-        # === State updates ===
+        # === Phase 2: Fixed-timestep simulation loop ===
+        while accumulator >= SIM_DT:
+            if state == STATE_PLAY:
+                if current_mode:
+                    result = current_mode.update(keys)
+                    # AI frame counting
+                    if hasattr(current_mode, 'ai_controllers'):
+                        ai_total_frames += len(current_mode.ai_controllers)
+
+                    # Anti-camping: nudge players who park in one spot > 5s
+                    now_camp = time.monotonic()
+                    for p in current_mode.players:
+                        pid = id(p)
+                        if not p.alive:
+                            camp_anchors.pop(pid, None)
+                            continue
+                        cx, cy = p.rect.center
+                        if pid in camp_anchors:
+                            ax, ay, start = camp_anchors[pid]
+                            dist_sq = (cx - ax) ** 2 + (cy - ay) ** 2
+                            if dist_sq > CAMP_RADIUS ** 2:
+                                camp_anchors[pid] = (cx, cy, now_camp)
+                            elif now_camp - start > CAMP_TIME:
+                                # Camping detected — fake damage nudge
+                                shake.trigger(6, 15)
+                                p.invincible_timer = max(
+                                    getattr(p, 'invincible_timer', 0), 30)
+                                nudge = random.choice([-45, 45])
+                                if hasattr(p, 'px'):
+                                    # Micro Machines — nudge float coords
+                                    p.px += nudge
+                                    p.py += random.choice([-35, 35])
+                                    p.px = max(20, min(SCREEN_WIDTH - 20, p.px))
+                                    p.py = max(20, min(SCREEN_HEIGHT - 20, p.py))
+                                elif hasattr(p, 'target_lane'):
+                                    # Excitebike — force lane change
+                                    if p.lane <= 0:
+                                        p.target_lane = 1
+                                    elif p.lane >= 2:
+                                        p.target_lane = 1
+                                    else:
+                                        p.target_lane = random.choice([0, 2])
+                                else:
+                                    # Desert Velocity — horizontal shove
+                                    p.rect.x += nudge
+                                    p.rect.x = max(
+                                        ROAD_LEFT + 5,
+                                        min(ROAD_RIGHT - p.rect.width - 5,
+                                            p.rect.x))
+                                camp_anchors[pid] = (
+                                    p.rect.centerx, p.rect.centery, now_camp)
+                        else:
+                            camp_anchors[pid] = (cx, cy, now_camp)
+
+                    if result == 'gameover':
+                        state = STATE_GAMEOVER
+                        if current_mode:
+                            shared_state.snapshot_from_players(current_mode.players)
+                        # Report brain results on game over
+                        if dashboard.enabled and active_brains:
+                            mode_idx = shared_state.current_mode if shared_state else 0
+                            pool = brain_pools.get(mode_idx)
+                            if pool:
+                                for pidx, brain in active_brains.items():
+                                    score = 0
+                                    if current_mode and pidx < len(current_mode.players):
+                                        score = current_mode.players[pidx].score
+                                    pool.report_result(brain.id, score)
+                    elif result == 'boss_defeated':
+                        advance_to_next_mode()
+
+            elif state == STATE_TRANSITION:
+                if transition:
+                    transition.update()
+                    if transition.done:
+                        session.update_transition_end()
+                        transition = None
+                        if current_mode:
+                            current_mode.setup()
+                        state = STATE_PLAY
+
+            tick += 1
+            accumulator -= SIM_DT
+
+        # === Phase 3: Render (once per display frame) ===
         if state == STATE_TITLE:
             draw_title(screen, tick, selected_diff, ai_reward_mult,
                        loop_count=tick, ai_frames=ai_total_frames,
                        target_fps=target_fps, dashboard=dashboard,
-                       evolution_mgr=evolution_mgr)
+                       evolution_mgr=evolution_mgr, vsync=disp.vsync_enabled)
 
         elif state == STATE_PLAY:
             if current_mode:
-                result = current_mode.update(keys)
                 current_mode.draw(screen)
                 # AI badges
                 if hasattr(current_mode, 'ai_controllers'):
                     draw_ai_badges(screen, current_mode.ai_controllers)
-                    ai_total_frames += len(current_mode.ai_controllers)
-                # FPS tracking
+                # FPS tracking (per render frame)
                 fps_mon.record_frame()
-
-                # Anti-camping: nudge players who park in one spot > 5s
-                now_camp = time.monotonic()
-                for p in current_mode.players:
-                    pid = id(p)
-                    if not p.alive:
-                        camp_anchors.pop(pid, None)
-                        continue
-                    cx, cy = p.rect.center
-                    if pid in camp_anchors:
-                        ax, ay, start = camp_anchors[pid]
-                        dist_sq = (cx - ax) ** 2 + (cy - ay) ** 2
-                        if dist_sq > CAMP_RADIUS ** 2:
-                            camp_anchors[pid] = (cx, cy, now_camp)
-                        elif now_camp - start > CAMP_TIME:
-                            # Camping detected — fake damage nudge
-                            shake.trigger(6, 15)
-                            p.invincible_timer = max(
-                                getattr(p, 'invincible_timer', 0), 30)
-                            nudge = random.choice([-45, 45])
-                            if hasattr(p, 'px'):
-                                # Micro Machines — nudge float coords
-                                p.px += nudge
-                                p.py += random.choice([-35, 35])
-                                p.px = max(20, min(SCREEN_WIDTH - 20, p.px))
-                                p.py = max(20, min(SCREEN_HEIGHT - 20, p.py))
-                            elif hasattr(p, 'target_lane'):
-                                # Excitebike — force lane change
-                                if p.lane <= 0:
-                                    p.target_lane = 1
-                                elif p.lane >= 2:
-                                    p.target_lane = 1
-                                else:
-                                    p.target_lane = random.choice([0, 2])
-                            else:
-                                # Desert Velocity — horizontal shove
-                                p.rect.x += nudge
-                                p.rect.x = max(
-                                    ROAD_LEFT + 5,
-                                    min(ROAD_RIGHT - p.rect.width - 5,
-                                        p.rect.x))
-                            camp_anchors[pid] = (
-                                p.rect.centerx, p.rect.centery, now_camp)
-                    else:
-                        camp_anchors[pid] = (cx, cy, now_camp)
-
-                if result == 'gameover':
-                    state = STATE_GAMEOVER
-                    if current_mode:
-                        shared_state.snapshot_from_players(current_mode.players)
-                    # Report brain results on game over
-                    if dashboard.enabled and active_brains:
-                        mode_idx = shared_state.current_mode if shared_state else 0
-                        pool = brain_pools.get(mode_idx)
-                        if pool:
-                            for pidx, brain in active_brains.items():
-                                score = 0
-                                if current_mode and pidx < len(current_mode.players):
-                                    score = current_mode.players[pidx].score
-                                pool.report_result(brain.id, score)
-                elif result == 'boss_defeated':
-                    advance_to_next_mode()
 
         elif state == STATE_PAUSED:
             # Draw the game underneath
@@ -486,14 +517,7 @@ def main():
 
         elif state == STATE_TRANSITION:
             if transition:
-                transition.update()
                 transition.draw(screen)
-                if transition.done:
-                    session.update_transition_end()
-                    transition = None
-                    if current_mode:
-                        current_mode.setup()
-                    state = STATE_PLAY
 
         elif state == STATE_VICTORY:
             _draw_victory(screen, shared_state, tick)
@@ -576,8 +600,6 @@ def main():
         session.update(state=state, shared_state=shared_state, current_mode=current_mode, tick=tick)
 
         pygame.display.flip()
-        clock.tick(target_fps if target_fps > 0 else 0)
-        tick += 1
 
     pygame.quit()
     sys.exit()
