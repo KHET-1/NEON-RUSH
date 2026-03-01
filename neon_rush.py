@@ -6,7 +6,6 @@ Flow: Desert Velocity → Boss → Excitebike → Boss → Micro Machines → Bo
 import pygame
 import sys
 import os
-import math
 import time
 import random
 import logging
@@ -31,6 +30,31 @@ CAMP_RADIUS = 15    # pixels — movement less than this counts as "stationary"
 CAMP_TIME = 5.0     # seconds before nudge triggers
 
 
+def _parse_args():
+    import argparse
+    parser = argparse.ArgumentParser(description="NEON RUSH")
+    parser.add_argument('-m', '--mode', choices=['desert', 'excitebike', 'micro'],
+                        default=None, help="Starting world (default: desert)")
+    parser.add_argument('-t', '--tier', type=int, default=1,
+                        help="Evolution tier to start at (1=V1, 2=V2, etc.)")
+    parser.add_argument('--god', action='store_true',
+                        help="God mode — players can't die")
+    parser.add_argument('--boss-rush', action='store_true',
+                        help="Boss spawns in ~5 seconds (QA mode)")
+    return parser.parse_args()
+
+
+def _apply_cli_flags(mode):
+    """Apply --god and --boss-rush overrides to a mode instance."""
+    if getattr(_cli_args, 'god', False):
+        mode.GOD_MODE = True
+    if getattr(_cli_args, 'boss_rush', False):
+        mode.BOSS_DISTANCE_THRESHOLD = 0.01
+        mode.BOSS_SCORE_THRESHOLD = 0
+        mode.BOSS_TIME_THRESHOLD = 0
+        mode.ASTEROID_CLEAR_TARGET = 3
+
+
 def _init_pygame():
     pygame.init()
     pygame.mixer.init(frequency=44100, size=-16, channels=1, buffer=512)
@@ -38,17 +62,15 @@ def _init_pygame():
 
 def main():
     from core.fonts import init_fonts
-    from core.sound import init_sounds, SFX
+    from core.sound import init_sounds
     import core.sound as _snd
     from core.display import create_display, display_surface, is_fullscreen, current_scale
     import core.display as disp
     from core.particles import ParticleSystem
     from core.shake import ScreenShake
     from core.highscores import is_highscore
-    from core.ui import (draw_title, draw_paused, draw_gameover, HighScoreEntry,
-                         MENU_ROW_MODES, MENU_ROW_DIFF, MENU_ROW_AI_REWARD,
-                         MENU_ROW_RENDER, MENU_ROW_EVOLUTION, MENU_ROW_LOGGING,
-                         MENU_NUM_ROWS, _MENU_COLS)
+    from core.ui import draw_title, draw_paused, draw_gameover, draw_victory, HighScoreEntry
+    from core.menu import MenuController
     from core.hud import draw_panel, draw_ai_badges
     from core.fps_monitor import FPSMonitor
     from shared.player_state import SharedPlayerState
@@ -58,7 +80,6 @@ def main():
     from modes.micromachines import MicroMachinesMode
     from ai.brain_pool import BrainPool
     from ai.brain import MODE_BRAIN_NAMES
-    from ai.controller import BrainController
     from ai.dashboard import LearningDashboard
     from core.evolution import EvolutionManager
 
@@ -89,16 +110,10 @@ def main():
 
     # Game state
     state = STATE_TITLE
-    selected_diff = DIFF_NORMAL
-    ai_reward_mult = 1
-    logging_enabled = False
-    menu_row = 0   # focused row on title screen
-    menu_col = 0   # focused column within row
+    menu = MenuController(evolution_mgr=evolution_mgr, dashboard=dashboard)
     tick = 0
     ai_total_frames = 0
     highscore_entry = None
-    target_fps = FPS
-    FPS_CAPS = [30, 60, 120, 144, 0]
     last_input_time = time.monotonic()
     had_ai_players = False
     continues_left = 3
@@ -115,11 +130,19 @@ def main():
 
     MODE_CLASSES = [DesertVelocityMode, ExcitebikeMode, MicroMachinesMode]
     DIFF_LIST = [DIFF_EASY, DIFF_NORMAL, DIFF_HARD]
+    _MODE_LOOKUP = {'desert': 0, 'excitebike': 1, 'micro': 2}
+
+    # CLI overrides (set by __main__ block before main() is called)
+    _start_mode_idx = _MODE_LOOKUP.get(getattr(_cli_args, 'mode', None) if '_cli_args' in globals() else None, 0)
+    _start_tier = getattr(_cli_args, 'tier', 1) if '_cli_args' in globals() else 1
 
     def start_game(num_players, ai_config=None):
         nonlocal shared_state, current_mode, had_ai_players, continues_left
+        nonlocal _start_mode_idx, _start_tier
         particles.clear()
         evolution_mgr.start_run()
+        if _start_tier > 1:
+            evolution_mgr.current_tier = _start_tier
 
         # Assign brains from pool for AI players if dashboard enabled
         brain_config = {"use_brains": dashboard.enabled, "brain_map": {}}
@@ -132,13 +155,18 @@ def main():
                     brain_config["brain_map"][pidx] = brain
                     active_brains[pidx] = brain
 
-        shared_state = SharedPlayerState(num_players, selected_diff, ai_config,
+        shared_state = SharedPlayerState(num_players, menu.selected_diff, ai_config,
                                          brain_config=brain_config,
                                          evolution_tier=evolution_mgr.current_tier)
-        current_mode = MODE_CLASSES[0](particles, shake, shared_state)
+        # Skip to requested starting mode
+        for _ in range(_start_mode_idx):
+            shared_state.current_mode += 1
+        mode_idx = min(_start_mode_idx, len(MODE_CLASSES) - 1)
+        current_mode = MODE_CLASSES[mode_idx](particles, shake, shared_state)
         current_mode.setup()
+        _apply_cli_flags(current_mode)
         fps_mon.start_tracking()
-        fps_mon.target_fps = target_fps
+        fps_mon.target_fps = menu.target_fps
         had_ai_players = bool(ai_config and ai_config.get("ai_players"))
         continues_left = 3
         camp_anchors.clear()
@@ -212,13 +240,14 @@ def main():
                 session.update_transition('evolution', f"EVOLUTION V{new_tier}!")
                 _assign_brains_for_mode(0)
                 current_mode = MODE_CLASSES[0](particles, shake, shared_state)
+                _apply_cli_flags(current_mode)
                 state = STATE_TRANSITION
-                SFX["evolve"].play()
+                _snd.play_sfx("evolve")
                 return
             else:
                 # Normal victory — all modes complete
                 state = STATE_VICTORY
-                SFX["victory"].play()
+                _snd.play_sfx("victory")
                 return
 
         # Assign brains for next mode
@@ -240,12 +269,13 @@ def main():
 
         # Create new mode
         current_mode = MODE_CLASSES[mode_idx](particles, shake, shared_state)
+        _apply_cli_flags(current_mode)
 
     running = True
     while running:
         # === Phase 0: Timing ===
         # VSync: GPU handles frame pacing, so tick(0). Otherwise software cap.
-        render_cap = 0 if disp.vsync_enabled else (target_fps if target_fps > 0 else 0)
+        render_cap = 0 if disp.vsync_enabled else (menu.target_fps if menu.target_fps > 0 else 0)
         frame_dt = clock.tick(render_cap) / 1000.0
         accumulator = min(accumulator + frame_dt, SIM_DT * MAX_CATCHUP)
 
@@ -266,130 +296,14 @@ def main():
                     disp.toggle_scale()
 
                 if state == STATE_TITLE:
-                    # Dashboard handles its own keys first
-                    if dashboard.handle_key(event):
-                        pass
-
-                    # --- Helper: start a game mode by column index ---
-                    def _launch_mode(col):
-                        nonlocal state
-                        if col == 0:
-                            start_game(1)
-                        elif col == 1:
-                            start_game(2)
-                        elif col == 2:
-                            ai_cfg = {"ai_players": [1], "score_mult": ai_reward_mult}
-                            start_game(2, ai_cfg)
-                        elif col == 3:
-                            ai_cfg = {"ai_players": [0], "score_mult": ai_reward_mult}
-                            start_game(1, ai_cfg)
-                        elif col == 4:
-                            ai_cfg = {"ai_players": [0, 1], "score_mult": ai_reward_mult}
-                            start_game(2, ai_cfg)
+                    result = menu.handle_event(event)
+                    if result == 'launch':
+                        num_p, ai_cfg = menu.get_launch_config()
+                        start_game(num_p, ai_cfg)
                         state = STATE_PLAY
-                        SFX["select"].play()
-
-                    def _toggle_logging():
-                        nonlocal logging_enabled
-                        logging_enabled = not logging_enabled
-                        root_log = logging.getLogger()
-                        if logging_enabled:
-                            root_log.setLevel(logging.DEBUG)
-                            logging.info("Logging: ON (DEBUG level)")
-                        else:
-                            logging.info("Logging: OFF (WARNING level)")
-                            root_log.setLevel(logging.WARNING)
-
-                    def _cycle_ai_reward(direction):
-                        nonlocal ai_reward_mult
-                        ai_vals = [1, 2, 4, 8]
-                        idx = ai_vals.index(ai_reward_mult) if ai_reward_mult in ai_vals else 0
-                        ai_reward_mult = ai_vals[max(0, min(len(ai_vals) - 1, idx + direction))]
-
-                    def _cycle_fps(direction):
-                        nonlocal target_fps
-                        idx = FPS_CAPS.index(target_fps) if target_fps in FPS_CAPS else 1
-                        target_fps = FPS_CAPS[max(0, min(len(FPS_CAPS) - 1, idx + direction))]
-                        fps_mon.target_fps = target_fps
-
-                    # === Arrow key navigation ===
-                    if event.key == pygame.K_UP:
-                        menu_row = (menu_row - 1) % MENU_NUM_ROWS
-                        menu_col = min(menu_col, _MENU_COLS[menu_row] - 1)
-                        SFX["select"].play()
-                    elif event.key == pygame.K_DOWN:
-                        menu_row = (menu_row + 1) % MENU_NUM_ROWS
-                        menu_col = min(menu_col, _MENU_COLS[menu_row] - 1)
-                        SFX["select"].play()
-                    elif event.key == pygame.K_LEFT:
-                        if menu_row == MENU_ROW_MODES:
-                            menu_col = max(0, menu_col - 1)
-                        elif menu_row == MENU_ROW_DIFF:
-                            idx = DIFF_LIST.index(selected_diff)
-                            selected_diff = DIFF_LIST[max(0, idx - 1)]
-                        elif menu_row == MENU_ROW_AI_REWARD:
-                            _cycle_ai_reward(-1)
-                        elif menu_row == MENU_ROW_RENDER:
-                            _cycle_fps(-1)
-                        elif menu_row == MENU_ROW_EVOLUTION:
-                            evolution_mgr.enabled = not evolution_mgr.enabled
-                        elif menu_row == MENU_ROW_LOGGING:
-                            _toggle_logging()
-                        SFX["select"].play()
-                    elif event.key == pygame.K_RIGHT:
-                        if menu_row == MENU_ROW_MODES:
-                            menu_col = min(_MENU_COLS[MENU_ROW_MODES] - 1, menu_col + 1)
-                        elif menu_row == MENU_ROW_DIFF:
-                            idx = DIFF_LIST.index(selected_diff)
-                            selected_diff = DIFF_LIST[min(len(DIFF_LIST) - 1, idx + 1)]
-                        elif menu_row == MENU_ROW_AI_REWARD:
-                            _cycle_ai_reward(1)
-                        elif menu_row == MENU_ROW_RENDER:
-                            _cycle_fps(1)
-                        elif menu_row == MENU_ROW_EVOLUTION:
-                            evolution_mgr.enabled = not evolution_mgr.enabled
-                        elif menu_row == MENU_ROW_LOGGING:
-                            _toggle_logging()
-                        SFX["select"].play()
-
-                    # === ENTER / SPACE: activate current selection ===
-                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
-                        if menu_row == MENU_ROW_MODES:
-                            _launch_mode(menu_col)
-                        elif menu_row == MENU_ROW_EVOLUTION:
-                            evolution_mgr.enabled = not evolution_mgr.enabled
-                            SFX["select"].play()
-                        elif menu_row == MENU_ROW_LOGGING:
-                            _toggle_logging()
-                            SFX["select"].play()
-
-                    # === Direct shortcut keys (still work) ===
-                    elif event.key in (pygame.K_1, pygame.K_KP1):
-                        _launch_mode(0)
-                    elif event.key in (pygame.K_2, pygame.K_KP2):
-                        _launch_mode(1)
-                    elif event.key in (pygame.K_3, pygame.K_KP3):
-                        _launch_mode(2)
-                    elif event.key in (pygame.K_4, pygame.K_KP4):
-                        _launch_mode(3)
-                    elif event.key in (pygame.K_5, pygame.K_KP5):
-                        _launch_mode(4)
-                    elif event.key in (pygame.K_6, pygame.K_KP6):
-                        ai_reward_mult = 1 if ai_reward_mult == 2 else 2
-                        SFX["select"].play()
-                    elif event.key in (pygame.K_7, pygame.K_KP7):
-                        ai_reward_mult = 1 if ai_reward_mult == 4 else 4
-                        SFX["select"].play()
-                    elif event.key in (pygame.K_8, pygame.K_KP8):
-                        ai_reward_mult = 1 if ai_reward_mult == 8 else 8
-                        SFX["select"].play()
-                    elif event.key == pygame.K_e:
-                        evolution_mgr.enabled = not evolution_mgr.enabled
-                        SFX["select"].play()
-                    elif event.key == pygame.K_l:
-                        _toggle_logging()
-                        SFX["select"].play()
-                    elif event.key == pygame.K_ESCAPE:
+                        fps_mon.target_fps = menu.target_fps
+                        _snd.play_sfx("select")
+                    elif result == 'quit':
                         running = False
 
                 elif state == STATE_PLAY:
@@ -424,9 +338,10 @@ def main():
                             for p in current_mode.players:
                                 p.lives = 1
                                 p.alive = True
-                                p.shield = 120  # brief invuln
+                                p.shield = True
+                                p.shield_timer = 120
                             state = STATE_PLAY
-                            SFX["select"].play()
+                            _snd.play_sfx("select")
                         else:
                             # Hard game over — highscore or title
                             best = shared_state.best_score if shared_state else 0
@@ -549,12 +464,13 @@ def main():
 
         # === Phase 3: Render (once per display frame) ===
         if state == STATE_TITLE:
-            draw_title(screen, tick, selected_diff, ai_reward_mult,
+            draw_title(screen, tick, menu.selected_diff, menu.ai_reward_mult,
                        loop_count=tick, ai_frames=ai_total_frames,
-                       target_fps=target_fps, dashboard=dashboard,
+                       target_fps=menu.target_fps, dashboard=dashboard,
                        evolution_mgr=evolution_mgr, vsync=disp.vsync_enabled,
-                       logging_enabled=logging_enabled,
-                       menu_row=menu_row, menu_col=menu_col)
+                       logging_enabled=menu.logging_enabled,
+                       sound_enabled=_snd.sound_enabled,
+                       menu_row=menu.menu_row, menu_col=menu.menu_col)
 
         elif state == STATE_PLAY:
             if current_mode:
@@ -592,7 +508,7 @@ def main():
                 transition.draw(screen)
 
         elif state == STATE_VICTORY:
-            _draw_victory(screen, shared_state, tick)
+            draw_victory(screen, shared_state, tick)
 
         # === Idle auto-actions (15s with no human input) ===
         idle_secs = time.monotonic() - last_input_time
@@ -604,7 +520,8 @@ def main():
                     for p in current_mode.players:
                         p.lives = 1
                         p.alive = True
-                        p.shield = 120
+                        p.shield = True
+                        p.shield_timer = 120
                     state = STATE_PLAY
                 else:
                     best = shared_state.best_score if shared_state else 0
@@ -626,7 +543,7 @@ def main():
                 last_input_time = time.monotonic()
             elif state == STATE_TITLE:
                 # Auto-start AI Solo
-                ai_cfg = {"ai_players": [0], "score_mult": ai_reward_mult}
+                ai_cfg = {"ai_players": [0], "score_mult": menu.ai_reward_mult}
                 start_game(1, ai_cfg)
                 state = STATE_PLAY
                 last_input_time = time.monotonic()
@@ -650,13 +567,16 @@ def main():
 
         sx, sy = shake.get_offset() if state == STATE_PLAY else (0, 0)
 
-        if disp.is_fullscreen:
-            dw, dh = ds.get_size()
+        dw, dh = ds.get_size()
+        if disp.is_fullscreen and disp.use_scaled:
+            # pygame.SCALED: display IS 800x600 (SDL does GPU upscale)
+            ds.blit(screen, (sx, sy))
+        elif disp.is_fullscreen:
             scale_factor = min(dw / SCREEN_WIDTH, dh / SCREEN_HEIGHT)
             sw = int(SCREEN_WIDTH * scale_factor)
             sh = int(SCREEN_HEIGHT * scale_factor)
             ds.fill(BLACK)
-            ds.blit(pygame.transform.smoothscale(screen, (sw, sh)),
+            ds.blit(pygame.transform.scale(screen, (sw, sh)),
                     ((dw - sw) // 2 + sx, (dh - sh) // 2 + sy))
         elif disp.current_scale == 1:
             ds.fill(BLACK)
@@ -677,58 +597,8 @@ def main():
     sys.exit()
 
 
-def _draw_victory(screen, shared_state, tick):
-    """Victory screen with total stats."""
-    from core.fonts import FONT_TITLE, FONT_SUBTITLE, FONT_HUD, FONT_HUD_SM, FONT_HUD_LG
-    from core.hud import draw_panel
-
-    t = (tick % 120) / 120
-    r = int(10 + 20 * math.sin(t * math.pi * 2))
-    g = int(5 + 15 * math.sin(t * math.pi * 2 + 1))
-    b = int(30 + 25 * math.sin(t * math.pi * 2 + 2))
-    screen.fill((r, g, b))
-
-    # Victory banner
-    pw, ph = 500, 380
-    px, py = (SCREEN_WIDTH - pw) // 2, (SCREEN_HEIGHT - ph) // 2 - 20
-    draw_panel(screen, pygame.Rect(px, py, pw, ph), (0, 0, 20, 220), SOLAR_YELLOW, 3)
-
-    # Title
-    for dx, dy in [(-2, -2), (2, -2), (-2, 2), (2, 2)]:
-        glow = FONT_TITLE.render("VICTORY!", True, NEON_MAGENTA)
-        screen.blit(glow, (SCREEN_WIDTH // 2 - glow.get_width() // 2 + dx, py + 15 + dy))
-    title = FONT_TITLE.render("VICTORY!", True, SOLAR_YELLOW)
-    screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, py + 15))
-
-    sub = FONT_SUBTITLE.render("ALL BOSSES DEFEATED!", True, NEON_CYAN)
-    screen.blit(sub, (SCREEN_WIDTH // 2 - sub.get_width() // 2, py + 85))
-
-    if shared_state:
-        y = py + 130
-        evo_tier = getattr(shared_state, 'evolution_tier', 1)
-        cycles = getattr(shared_state, 'cycle_count', 0)
-        bosses_total = shared_state.bosses_defeated
-        stats = [
-            ("Total Score", str(shared_state.best_score)),
-            ("Total Coins", str(shared_state.total_coins)),
-            ("Distance", f"{shared_state.total_distance:.1f} km"),
-            ("Bosses", f"{bosses_total}" + (f" ({cycles} cycles)" if cycles > 0 else "/3")),
-            ("Evolution", f"V{evo_tier}" if evo_tier > 1 else "V1 (base)"),
-        ]
-        for label, value in stats:
-            lt = FONT_HUD_SM.render(f"{label}:", True, (180, 180, 200))
-            screen.blit(lt, (px + 40, y))
-            vt = FONT_HUD.render(value, True, SOLAR_WHITE)
-            screen.blit(vt, (px + 200, y - 2))
-            y += 35
-
-    blink = (tick // 25) % 2
-    if blink:
-        cont = FONT_HUD.render("SPACE = Continue    ESC = Title", True, NEON_CYAN)
-        screen.blit(cont, (SCREEN_WIDTH // 2 - cont.get_width() // 2, py + ph - 45))
-
-
 if __name__ == "__main__":
+    _cli_args = _parse_args()
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(message)s")
     preinit_heal()
 
