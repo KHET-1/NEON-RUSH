@@ -31,9 +31,9 @@ class MicroMachinesMode(GameMode):
     MODE_INDEX = MODE_MICROMACHINES
     MUSIC_KEY = "micromachines"
 
-    BOSS_DISTANCE_THRESHOLD = 2.0
-    BOSS_SCORE_THRESHOLD = 12000
-    BOSS_TIME_THRESHOLD = 120 * 60
+    BOSS_DISTANCE_THRESHOLD = 1.0
+    BOSS_SCORE_THRESHOLD = 6000
+    BOSS_TIME_THRESHOLD = 60 * 60  # 1 min
 
     def __init__(self, particles, shake, shared_state):
         super().__init__(particles, shake, shared_state)
@@ -61,16 +61,17 @@ class MicroMachinesMode(GameMode):
         diff = self.shared_state.difficulty
         selected_diff = diff if diff in DIFFICULTY_SETTINGS else DIFF_NORMAL
 
+        tier = self.shared_state.evolution_tier
         if self.two_player:
-            p1 = MicroPlayer(self.particles, 1, diff=selected_diff)
+            p1 = MicroPlayer(self.particles, 1, diff=selected_diff, tier=tier)
             p1.px = SCREEN_WIDTH // 2 - 40
             p1.py = SCREEN_HEIGHT - 100
-            p2 = MicroPlayer(self.particles, 2, diff=selected_diff)
+            p2 = MicroPlayer(self.particles, 2, diff=selected_diff, tier=tier)
             p2.px = SCREEN_WIDTH // 2 + 40
             p2.py = SCREEN_HEIGHT - 100
             self.players = [p1, p2]
         else:
-            p1 = MicroPlayer(self.particles, 1, solo=True, diff=selected_diff)
+            p1 = MicroPlayer(self.particles, 1, solo=True, diff=selected_diff, tier=tier)
             p1.px = SCREEN_WIDTH // 2
             p1.py = SCREEN_HEIGHT - 100
             self.players = [p1]
@@ -148,8 +149,10 @@ class MicroMachinesMode(GameMode):
         if self.boss_active and self.boss:
             self.boss.update(alive_players, self.scroll_speed)
 
+            # Auto-fire when boss alive
+            has_target = self.boss and self.boss.alive
             for p in alive_players:
-                fired, bx, by = p.try_fire_heat_bolt(keys)
+                fired, bx, by = p.try_fire_heat_bolt(keys, auto_fire=has_target)
                 if fired:
                     bolt = HeatBolt(bx, by, p.color_accent)
                     bolt.speed = -8
@@ -208,7 +211,7 @@ class MicroMachinesMode(GameMode):
         self.oil_timer += 1
         if self.oil_timer > 200:
             x = random.randint(100, SCREEN_WIDTH - 100)
-            oil = OilSlickHazard(x, -30)
+            oil = OilSlickHazard(x, -30, tier=self.shared_state.evolution_tier)
             self.all_sprites.add(oil)
             self.oil_slicks.add(oil)
             self.oil_timer = 0
@@ -338,9 +341,10 @@ class MicroMachinesMode(GameMode):
 
     def _update_asteroid_phase(self, keys, alive_players, diff_s):
         """Handle asteroid phase: vertical asteroids falling down."""
-        # Fire heat bolts (go UP)
+        # Fire heat bolts (go UP, auto-fire when asteroids on screen)
+        has_target = len(self.asteroids) > 0
         for p in alive_players:
-            fired, bx, by = p.try_fire_heat_bolt(keys)
+            fired, bx, by = p.try_fire_heat_bolt(keys, auto_fire=has_target)
             if fired:
                 bolt = HeatBolt(bx, by, p.color_accent)
                 bolt.speed = -8
@@ -358,15 +362,24 @@ class MicroMachinesMode(GameMode):
                                          [SOLAR_YELLOW, SOLAR_WHITE], 6, 3, 20, 2)
                     bolt.kill()
                     if destroyed:
-                        self.particles.burst(*ast.get_death_particles())
                         for p in alive_players:
                             pts = ast.points * p.score_mult
                             p.score += pts
                             self.floating_texts.append(
                                 FloatingText(ast.rect.centerx, ast.rect.top - 10,
                                              f"+{pts}", SOLAR_YELLOW))
-                        self.asteroids_cleared += 1
-                        SFX["asteroid_destroy"].play()
+                        if destroyed['terminal']:
+                            self.particles.burst(*ast.get_death_particles())
+                            self.asteroids_cleared += 1
+                            SFX["asteroid_destroy"].play()
+                        else:
+                            self.particles.burst(*ast.get_split_particles())
+                            self.shake.trigger(3, 8)
+                            SFX["asteroid_split"].play()
+                            for frag_info in destroyed['fragments']:
+                                child = Asteroid.spawn_fragment(frag_info)
+                                self.asteroids.add(child)
+                                self.all_sprites.add(child)
                     else:
                         SFX["asteroid_hit"].play()
                     break
@@ -445,8 +458,11 @@ class MicroMachinesMode(GameMode):
             self.boss.draw(screen)
 
     def _draw_hud(self, screen):
+        import math as _m
         from core.fonts import FONT_HUD, FONT_HUD_SM
-        from core.hud import draw_lives_icons
+        from core.hud import draw_lives_icons, _draw_text_glow, _hud_tick
+
+        tier = self.shared_state.evolution_tier
 
         for idx, player in enumerate(self.players):
             if not player.alive and self.two_player:
@@ -454,27 +470,65 @@ class MicroMachinesMode(GameMode):
             px = 8 if idx == 0 else SCREEN_WIDTH - 200
             if not self.two_player:
                 px = 8
-            draw_panel(screen, pygame.Rect(px, 8, 190, 80), (0, 0, 0, 180), player.color_accent)
 
-            label = FONT_HUD_SM.render(player.name, True, player.color_accent)
-            screen.blit(label, (px + 8, 12))
+            if tier >= 2:
+                speed_t = min(1.0, abs(player.speed) / 12.0)
+                border_col = tuple(
+                    int(player.color_accent[i] * (1 - speed_t) + NEON_MAGENTA[i] * speed_t)
+                    for i in range(3)
+                )
+            else:
+                border_col = player.color_accent
+
+            draw_panel(screen, pygame.Rect(px, 8, 190, 80), (0, 0, 0, 180), border_col, tier=tier)
+
+            if tier >= 2 and FONT_HUD_SM:
+                _draw_text_glow(screen, FONT_HUD_SM, player.name, player.color_accent,
+                                px + 8, 12, accent_color=NEON_CYAN)
+            elif FONT_HUD_SM:
+                label = FONT_HUD_SM.render(player.name, True, player.color_accent)
+                screen.blit(label, (px + 8, 12))
             draw_lives_icons(screen, player, px + 55, 14)
 
             heat_pct = min(100, int(player.heat))
             bar_w = 170
-            pygame.draw.rect(screen, (32, 32, 42), (px + 10, 34, bar_w, 10))
+            bar_h = 10
+            pygame.draw.rect(screen, (32, 32, 42), (px + 10, 34, bar_w, bar_h))
             fill_w = int(bar_w * heat_pct / 100)
             if fill_w > 0:
                 bar_col = NEON_MAGENTA if heat_pct > 80 else player.color_accent
-                pygame.draw.rect(screen, bar_col, (px + 10, 34, fill_w, 10))
+                pygame.draw.rect(screen, bar_col, (px + 10, 34, fill_w, bar_h))
 
-            spd = FONT_HUD_SM.render(f"{int(abs(player.speed) * 10)} km/h", True, SOLAR_WHITE)
-            screen.blit(spd, (px + 10, 48))
-            score_t = FONT_HUD_SM.render(f"Score: {player.score}  x{player.coins}", True, COIN_GOLD)
-            screen.blit(score_t, (px + 10, 64))
+                if tier >= 2:
+                    flow_x = int(_m.sin(_hud_tick * 0.1) * fill_w * 0.3)
+                    flow_w = max(4, fill_w // 4)
+                    flow_start = px + 10 + max(0, min(fill_w - flow_w, fill_w // 2 + flow_x))
+                    flow_surf = pygame.Surface((flow_w, bar_h), pygame.SRCALPHA)
+                    flow_surf.fill((255, 255, 255, 40))
+                    screen.blit(flow_surf, (flow_start, 34))
+                    if heat_pct > 80:
+                        glow_pulse = 0.5 + 0.5 * _m.sin(_hud_tick * 0.15)
+                        glow_a = int(80 * glow_pulse)
+                        pygame.draw.rect(screen, (*NEON_MAGENTA[:3], glow_a),
+                                         (px + 9, 33, fill_w + 2, bar_h + 2), 2)
 
-        dist_t = FONT_HUD.render(f"{self.game_distance:.1f} km", True, SOLAR_WHITE)
-        screen.blit(dist_t, (SCREEN_WIDTH // 2 - dist_t.get_width() // 2, 12))
+            if tier >= 2 and FONT_HUD_SM:
+                _draw_text_glow(screen, FONT_HUD_SM, f"{int(abs(player.speed) * 10)} km/h",
+                                SOLAR_WHITE, px + 10, 48, accent_color=player.color_accent)
+                _draw_text_glow(screen, FONT_HUD_SM, f"Score: {player.score}  x{player.coins}",
+                                COIN_GOLD, px + 10, 64, accent_color=(200, 180, 0))
+            elif FONT_HUD_SM:
+                spd = FONT_HUD_SM.render(f"{int(abs(player.speed) * 10)} km/h", True, SOLAR_WHITE)
+                screen.blit(spd, (px + 10, 48))
+                score_t = FONT_HUD_SM.render(f"Score: {player.score}  x{player.coins}", True, COIN_GOLD)
+                screen.blit(score_t, (px + 10, 64))
+
+        if tier >= 2 and FONT_HUD:
+            _draw_text_glow(screen, FONT_HUD, f"{self.game_distance:.1f} km",
+                            SOLAR_WHITE, SCREEN_WIDTH // 2 - 40, 12, accent_color=NEON_CYAN)
+        elif FONT_HUD:
+            dist_t = FONT_HUD.render(f"{self.game_distance:.1f} km", True, SOLAR_WHITE)
+            screen.blit(dist_t, (SCREEN_WIDTH // 2 - dist_t.get_width() // 2, 12))
 
     def cleanup(self):
         if _snd.music_channel and _snd.music_channel.get_busy():

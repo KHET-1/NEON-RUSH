@@ -176,9 +176,89 @@ class HighScoreEntry:
         screen.blit(hint, (SCREEN_WIDTH // 2 - hint.get_width() // 2, py + 215))
 
 
+def _draw_checkstamp(screen, x, y, checked, tick):
+    """Draw a custom neon checkmark stamp — procedural glow box with animated check."""
+    sz = 16
+    # Box outline: cyan glow when checked, dim gray when not
+    if checked:
+        pulse = 0.7 + 0.3 * math.sin(tick * 0.08)
+        box_color = (0, int(200 * pulse), int(255 * pulse))
+        # Outer glow
+        glow_surf = pygame.Surface((sz + 8, sz + 8), pygame.SRCALPHA)
+        pygame.draw.rect(glow_surf, (*NEON_CYAN, 35), (0, 0, sz + 8, sz + 8), border_radius=4)
+        screen.blit(glow_surf, (x - 4, y - 4))
+    else:
+        box_color = (60, 60, 80)
+
+    # Main box
+    pygame.draw.rect(screen, (20, 20, 30), (x, y, sz, sz), border_radius=3)
+    pygame.draw.rect(screen, box_color, (x, y, sz, sz), 2, border_radius=3)
+
+    if checked:
+        # Draw the checkmark — two strokes forming a ✓
+        # Short down-stroke then long up-stroke
+        check_color = NEON_CYAN
+        p1 = (x + 3, y + 8)     # start
+        p2 = (x + 6, y + 12)    # bottom of check
+        p3 = (x + 13, y + 4)    # top of check
+        pygame.draw.line(screen, check_color, p1, p2, 2)
+        pygame.draw.line(screen, check_color, p2, p3, 2)
+        # Bright center dot at the checkmark vertex
+        pygame.draw.circle(screen, (200, 255, 255), p2, 1)
+
+
+# --- Menu navigation constants ---
+MENU_ROW_MODES = 0
+MENU_ROW_DIFF = 1
+MENU_ROW_AI_REWARD = 2
+MENU_ROW_RENDER = 3
+MENU_ROW_EVOLUTION = 4
+MENU_ROW_LOGGING = 5
+MENU_NUM_ROWS = 6
+
+# Items per row (for LEFT/RIGHT bounds)
+_MENU_COLS = {
+    MENU_ROW_MODES: 5,       # SOLO, 2P, P+AI, AI, AI+AI
+    MENU_ROW_DIFF: 3,        # EASY, NORMAL, HARD
+    MENU_ROW_AI_REWARD: 4,   # off, x2, x4, x8
+    MENU_ROW_RENDER: 1,      # single cycler
+    MENU_ROW_EVOLUTION: 1,   # toggle
+    MENU_ROW_LOGGING: 1,     # toggle
+}
+
+# Y positions of each row (for cursor drawing)
+_ROW_Y = {
+    MENU_ROW_MODES: 225,
+    MENU_ROW_DIFF: 268,
+    MENU_ROW_AI_REWARD: 308,
+    MENU_ROW_RENDER: 330,
+    MENU_ROW_EVOLUTION: 348,
+    MENU_ROW_LOGGING: 366,
+}
+
+
+def _draw_row_cursor(screen, y, tick):
+    """Draw a pulsing neon cursor chevron at the left edge of the focused row."""
+    pulse = 0.5 + 0.5 * math.sin(tick * 0.1)
+    alpha = int(160 + 95 * pulse)
+    color = (*NEON_CYAN, alpha)
+
+    # Chevron: two lines forming >
+    chev_x = 38
+    chev_y = y + 3
+    sz = 6
+    surf = pygame.Surface((sz * 2 + 4, sz * 2 + 4), pygame.SRCALPHA)
+    pts = [(2, 2), (sz * 2, sz + 2), (2, sz * 2 + 2)]
+    pygame.draw.lines(surf, color, False, pts, 3)
+    # Glow echo
+    pygame.draw.lines(surf, (*NEON_MAGENTA, int(50 * pulse)), False, pts, 5)
+    screen.blit(surf, (chev_x, chev_y))
+
+
 def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
                loop_count=0, ai_frames=0, target_fps=144, dashboard=None,
-               evolution_mgr=None, vsync=True):
+               evolution_mgr=None, vsync=True, logging_enabled=False,
+               menu_row=0, menu_col=0):
     from core.fonts import FONT_TITLE, FONT_SUBTITLE, FONT_HUD, FONT_HUD_SM, FONT_HUD_SM_BOLD
 
     t = (tick % 180) / 180
@@ -208,27 +288,49 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
     sub = FONT_SUBTITLE.render("DESERT VELOCITY", True, SOLAR_YELLOW)
     screen.blit(sub, (cx - sub.get_width() // 2, 155))
 
-    # Game mode options row
-    blink = (tick // 30) % 2
-    if blink:
-        modes_row = [
-            ("[1] SOLO", NEON_CYAN),
-            ("[2] 2-PLAYER", NEON_MAGENTA),
-            ("[3] PLAYER+AI", (100, 255, 100)),
-            ("[4] AI SOLO", (100, 255, 100)),
-            ("[5] AI+AI", (100, 255, 100)),
-        ]
-        total_w = sum(FONT_HUD_SM.size(m[0])[0] for m in modes_row) + 12 * (len(modes_row) - 1)
-        mx = cx - total_w // 2
-        for label, color in modes_row:
-            mt = FONT_HUD_SM.render(label, True, color)
+    # === Row 0: Game mode options ===
+    modes_data = [
+        ("SOLO", NEON_CYAN),
+        ("2-PLAYER", NEON_MAGENTA),
+        ("PLAYER+AI", (100, 255, 100)),
+        ("AI SOLO", (100, 255, 100)),
+        ("AI+AI", (100, 255, 100)),
+    ]
+    is_focused = menu_row == MENU_ROW_MODES
+    total_w = sum(FONT_HUD_SM.size(m[0])[0] for m in modes_data) + 12 * (len(modes_data) - 1)
+    mx = cx - total_w // 2
+    for i, (label, base_color) in enumerate(modes_data):
+        is_col_sel = is_focused and menu_col == i
+        if is_col_sel:
+            font = FONT_HUD_SM_BOLD
+            color = base_color
+            text = f"> {label} <"
+        elif is_focused:
+            font = FONT_HUD_SM
+            color = tuple(max(40, c // 2) for c in base_color)
+            text = label
+        else:
+            # Blink when not focused
+            if (tick // 30) % 2:
+                font = FONT_HUD_SM
+                color = base_color
+                text = label
+            else:
+                font = FONT_HUD_SM
+                color = (0, 0, 0, 0)
+                text = ""
+        if text:
+            mt = font.render(text, True, color)
             screen.blit(mt, (mx, 225))
-            mx += mt.get_width() + 12
+        # Advance by the base label width to keep spacing stable
+        mx += FONT_HUD_SM.size(label)[0] + 12
 
-    # Difficulty selector — LEFT/RIGHT arrows cycle
+    # === Row 1: Difficulty selector ===
     diff_y = 268
     diff_list = [DIFF_EASY, DIFF_NORMAL, DIFF_HARD]
-    diff_label = FONT_HUD_SM.render("Difficulty:", True, (150, 150, 170))
+    is_focused = menu_row == MENU_ROW_DIFF
+    diff_label = FONT_HUD_SM.render("Difficulty:", True,
+                                     (200, 200, 220) if is_focused else (150, 150, 170))
     screen.blit(diff_label, (cx - 150, diff_y))
     for i, d in enumerate(diff_list):
         ds = DIFFICULTY_SETTINGS[d]
@@ -242,54 +344,89 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
         dt = font.render(text, True, color)
         screen.blit(dt, (cx - 30 + i * 80, diff_y))
 
-    arrows = FONT_HUD_SM.render("(LEFT/RIGHT to change)", True, (100, 100, 120))
-    screen.blit(arrows, (cx - arrows.get_width() // 2, diff_y + 18))
+    if is_focused:
+        hint = FONT_HUD_SM.render("LEFT/RIGHT to change", True, NEON_CYAN)
+    else:
+        hint = FONT_HUD_SM.render("(LEFT/RIGHT to change)", True, (100, 100, 120))
+    screen.blit(hint, (cx - hint.get_width() // 2, diff_y + 18))
 
-    # AI Reward multiplier row
+    # === Row 2: AI Reward multiplier ===
     ai_y = 308
-    ai_label = FONT_HUD_SM.render("AI Reward:", True, (150, 150, 170))
+    is_focused = menu_row == MENU_ROW_AI_REWARD
+    ai_label = FONT_HUD_SM.render("AI Reward:", True,
+                                   (200, 200, 220) if is_focused else (150, 150, 170))
     screen.blit(ai_label, (cx - 150, ai_y))
-    for val, key in [(2, "6"), (4, "7"), (8, "8")]:
+    ai_vals = [1, 2, 4, 8]
+    ai_labels = ["off", "x2", "x4", "x8"]
+    for i, (val, lbl) in enumerate(zip(ai_vals, ai_labels)):
         is_active = ai_reward_mult == val
-        text = f"[{key}] x{val}"
-        color = (100, 255, 100) if is_active else (80, 80, 100)
-        font = FONT_HUD_SM_BOLD if is_active else FONT_HUD_SM
+        if is_active:
+            text = f"> {lbl} <"
+            color = (100, 255, 100)
+            font = FONT_HUD_SM_BOLD
+        else:
+            text = lbl
+            color = (80, 80, 100)
+            font = FONT_HUD_SM
         rt = font.render(text, True, color)
-        screen.blit(rt, (cx - 30 + (int(key) - 6) * 80, ai_y))
-    if ai_reward_mult == 1:
-        off_label = FONT_HUD_SM.render("x1 (off)", True, (100, 100, 120))
-        screen.blit(off_label, (cx + 220, ai_y))
+        screen.blit(rt, (cx - 40 + i * 70, ai_y))
 
-    # Render FPS cap row + VSync indicator
+    # === Row 3: Render FPS cap + VSync indicator ===
     fps_y = 330
-    fps_label = FONT_HUD_SM.render("Render:", True, (150, 150, 170))
+    is_focused = menu_row == MENU_ROW_RENDER
+    fps_label = FONT_HUD_SM.render("Render:", True,
+                                    (200, 200, 220) if is_focused else (150, 150, 170))
     screen.blit(fps_label, (cx - 150, fps_y))
     if vsync:
         fps_display = "VSync" if target_fps == 0 else f"{target_fps} FPS + VSync"
     else:
         fps_display = "UNL" if target_fps == 0 else f"{target_fps} FPS"
-    fps_val_t = FONT_HUD_SM_BOLD.render(f"< {fps_display} >", True, NEON_CYAN)
+    fps_color = NEON_CYAN if is_focused else (0, 200, 220)
+    fps_val_t = FONT_HUD_SM_BOLD.render(f"< {fps_display} >", True, fps_color)
     screen.blit(fps_val_t, (cx - fps_val_t.get_width() // 2, fps_y))
-    fps_hint = FONT_HUD_SM.render("(UP/DOWN)", True, (100, 100, 120))
-    screen.blit(fps_hint, (cx + fps_val_t.get_width() // 2 + 6, fps_y))
 
-    # Evolution toggle row
+    # === Row 4: Evolution toggle ===
     if evolution_mgr is not None:
         evo_y = 348
+        is_focused = menu_row == MENU_ROW_EVOLUTION
         evo_state = "ON" if evolution_mgr.enabled else "OFF"
         evo_color = SOLAR_YELLOW if evolution_mgr.enabled else (80, 80, 100)
-        evo_font = FONT_HUD_SM_BOLD if evolution_mgr.enabled else FONT_HUD_SM
-        evo_text = f"[E] Evolution: {evo_state}"
+        if is_focused:
+            evo_color = SOLAR_YELLOW if evolution_mgr.enabled else (150, 150, 170)
+        evo_font = FONT_HUD_SM_BOLD if evolution_mgr.enabled or is_focused else FONT_HUD_SM
+        evo_text = f"Evolution: {evo_state}"
         if evolution_mgr.max_tier > 1:
             evo_text += f"  (Max: V{evolution_mgr.max_tier})"
         et = evo_font.render(evo_text, True, evo_color)
-        screen.blit(et, (cx - et.get_width() // 2, evo_y))
+        # Checkstamp for evolution
+        stamp_x = cx - et.get_width() // 2 - 22
+        screen.blit(et, (stamp_x + 22, evo_y))
+        _draw_checkstamp(screen, stamp_x, evo_y + 1, evolution_mgr.enabled, tick)
+
+    # === Row 5: Logging toggle ===
+    log_y = 366
+    is_focused = menu_row == MENU_ROW_LOGGING
+    log_label_text = "Logging"
+    log_color = NEON_CYAN if logging_enabled else (80, 80, 100)
+    if is_focused:
+        log_color = NEON_CYAN if logging_enabled else (150, 150, 170)
+    log_font = FONT_HUD_SM_BOLD if logging_enabled or is_focused else FONT_HUD_SM
+    lt = log_font.render(log_label_text, True, log_color)
+    label_x = cx - lt.get_width() // 2 - 12
+    screen.blit(lt, (label_x + 22, log_y))
+    _draw_checkstamp(screen, label_x, log_y + 1, logging_enabled, tick)
+
+    # === Row cursor indicator (pulsing chevron) ===
+    row_y = _ROW_Y.get(menu_row, 225)
+    _draw_row_cursor(screen, row_y, tick)
+
+    # Navigation hint
+    nav_hint = FONT_HUD_SM.render("UP/DOWN = Navigate   LEFT/RIGHT = Change   ENTER = Select", True, (100, 100, 120))
+    screen.blit(nav_hint, (cx - nav_hint.get_width() // 2, 388))
 
     # Controls hints (condensed)
     c1 = FONT_HUD_SM.render("P1: WASD + Shift   Solo: WASD/Arrows   P2: Arrows + R.Shift", True, (120, 120, 140))
-    screen.blit(c1, (cx - c1.get_width() // 2, 370))
-    c0 = FONT_HUD_SM.render("Double-tap < or > = Leap   Enter = Heat bolt   P = Pause", True, SLOWMO_GREEN)
-    screen.blit(c0, (cx - c0.get_width() // 2, 388))
+    screen.blit(c1, (cx - c1.get_width() // 2, 406))
 
     # Dashboard or High scores
     if dashboard and dashboard.active:

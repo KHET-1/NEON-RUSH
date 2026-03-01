@@ -2,7 +2,7 @@
 SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
 FPS = 144
-SIM_RATE = 72             # Fixed simulation tick rate (Hz)
+SIM_RATE = 36             # Fixed simulation tick rate (Hz)
 SIM_DT = 1.0 / SIM_RATE  # Seconds per simulation step
 
 # Colors

@@ -29,14 +29,57 @@ def make_vehicle_surface(color_main, color_accent, is_ghost=False):
     return surf
 
 
+def make_vehicle_surface_v2(color_main, color_accent, is_ghost=False):
+    """V2+ vehicle with underglow, detail shading, windshield glint, exhaust glow."""
+    surf = pygame.Surface((48, 68), pygame.SRCALPHA)
+    alpha = 140 if is_ghost else 255
+    cx, cy = 24, 34
+
+    # Underglow: wide ellipse beneath car body
+    pygame.draw.ellipse(surf, (*color_accent, 40), (cx - 18, cy + 10, 36, 20))
+
+    # Main body (same shape, slightly larger)
+    body = [(cx, 4), (cx + 18, cy + 14), (cx + 14, cy + 28), (cx - 14, cy + 28), (cx - 18, cy + 14)]
+    shadow = [(cx + 2, 6), (cx + 18, cy + 14), (cx + 12, cy + 26), (cx - 12, cy + 26), (cx - 16, cy + 14)]
+    pygame.draw.polygon(surf, (*color_main, alpha), body)
+    pygame.draw.polygon(surf, (*color_accent, int(alpha * 0.4)), shadow)
+
+    # Detail shading: darker stripe along each side (2px inset)
+    side_dark = tuple(max(0, c - 40) for c in color_main)
+    left_stripe = [(cx - 16, cy + 14), (cx - 12, cy + 26), (cx - 14, cy + 26), (cx - 18, cy + 14)]
+    right_stripe = [(cx + 16, cy + 14), (cx + 12, cy + 26), (cx + 14, cy + 26), (cx + 18, cy + 14)]
+    pygame.draw.polygon(surf, (*side_dark, int(alpha * 0.7)), left_stripe)
+    pygame.draw.polygon(surf, (*side_dark, int(alpha * 0.7)), right_stripe)
+
+    # Inner panel
+    inner = [(cx, 12), (cx + 12, cy + 8), (cx + 8, cy + 22), (cx - 8, cy + 22), (cx - 12, cy + 8)]
+    pygame.draw.polygon(surf, (*color_accent, int(alpha * 0.6)), inner)
+
+    # Body outline
+    pygame.draw.lines(surf, (*color_accent, min(255, alpha + 40)), True, body, 2)
+
+    # Windshield with glint
+    pygame.draw.ellipse(surf, (*SOLAR_WHITE, alpha // 2), (cx - 7, 16, 14, 18))
+    # Bright white glint line across windshield top
+    pygame.draw.line(surf, (255, 255, 255, min(255, alpha)), (cx - 5, 17), (cx + 5, 17), 1)
+
+    # Exhaust glow: 2 stacked ellipses (inner bright, outer alpha glow)
+    pygame.draw.ellipse(surf, (*DESERT_ORANGE, alpha // 4), (cx - 10, cy + 22, 20, 10))
+    pygame.draw.ellipse(surf, (*DESERT_ORANGE, int(alpha * 0.7)), (cx - 6, cy + 24, 12, 6))
+    pygame.draw.ellipse(surf, (*SOLAR_WHITE, alpha // 2), (cx - 3, cy + 25, 6, 3))
+
+    return surf
+
+
 class Player(pygame.sprite.Sprite):
-    def __init__(self, particles, player_num=1, x_pos=None, solo=False, diff=DIFF_NORMAL):
+    def __init__(self, particles, player_num=1, x_pos=None, solo=False, diff=DIFF_NORMAL, tier=1):
         super().__init__()
         self.player_num = player_num
         self.diff_settings = DIFFICULTY_SETTINGS[diff]
         self.is_ai = False
         self._ai_keys = {}
         self.score_mult = 1
+        self.tier = tier
         if player_num == 1:
             self.color_main = (0, 180, 200)
             self.color_accent = NEON_CYAN
@@ -70,8 +113,12 @@ class Player(pygame.sprite.Sprite):
             "boost": self.keys_boost, "fire": self.keys_fire,
         }
 
-        self.base_image = make_vehicle_surface(self.color_main, self.color_accent)
-        self.ghost_image = make_vehicle_surface(self.color_main, self.color_accent, True)
+        if tier >= 2:
+            self.base_image = make_vehicle_surface_v2(self.color_main, self.color_accent)
+            self.ghost_image = make_vehicle_surface_v2(self.color_main, self.color_accent, True)
+        else:
+            self.base_image = make_vehicle_surface(self.color_main, self.color_accent)
+            self.ghost_image = make_vehicle_surface(self.color_main, self.color_accent, True)
         self.image = self.base_image.copy()
 
         start_x = x_pos if x_pos else ROAD_CENTER
@@ -86,6 +133,7 @@ class Player(pygame.sprite.Sprite):
         self.particles = particles
         self.last_emit = 0
         self.crash_emit = False
+        self.tilt_angle = 0.0  # visual lean into curves (degrees)
         self.flare_hit = False
 
         self.lives = self.diff_settings["lives"]
@@ -142,10 +190,14 @@ class Player(pygame.sprite.Sprite):
             return False
         return any(keys[k] for k in key_list)
 
-    def try_fire_heat_bolt(self, keys):
+    def try_fire_heat_bolt(self, keys, auto_fire=False):
         """Attempt to fire a heat bolt. Returns (fired, bolt_x, bolt_y) if successful."""
         if not self.alive or self.fire_cooldown > 0:
             return False, 0, 0
+        if auto_fire:
+            # Auto-fire: free, fast, silent
+            self.fire_cooldown = 12
+            return True, self.rect.centerx, self.rect.top
         if self._any_key(keys, self.keys_fire) and self.heat >= self.HEAT_COST:
             self.heat -= self.HEAT_COST
             self.fire_cooldown = self.FIRE_COOLDOWN_FRAMES
@@ -153,11 +205,23 @@ class Player(pygame.sprite.Sprite):
             return True, self.rect.centerx, self.rect.top
         return False, 0, 0
 
-    def update(self, keys, slowmo_active=False):
+    def update(self, keys, slowmo_active=False, road_geometry=None):
         if not self.alive:
             return
 
         spd_m = 0.5 if slowmo_active else 1.0
+
+        # Compute dynamic road bounds
+        if road_geometry:
+            r_left, r_right = road_geometry.get_road_bounds_at_bottom()
+            bound_left = int(r_left) + 5
+            bound_right = int(r_right) - self.rect.width - 5
+            # Curve drift force: very subtle push on curves
+            curve_force = road_geometry.current_curve * 0.4
+        else:
+            bound_left = ROAD_LEFT + 5
+            bound_right = ROAD_RIGHT - self.rect.width - 5
+            curve_force = 0.0
 
         if self.leap_cooldown > 0:
             self.leap_cooldown -= 1
@@ -166,7 +230,7 @@ class Player(pygame.sprite.Sprite):
 
         if self.leap_request != 0:
             dx = self.leap_request * self.LEAP_DISTANCE
-            self.rect.x = max(ROAD_LEFT + 5, min(self.rect.x + dx, ROAD_RIGHT - self.rect.width - 5))
+            self.rect.x = max(bound_left, min(self.rect.x + dx, bound_right))
             for _ in range(8):
                 vx = random.uniform(-2, 2) - self.leap_request * 3
                 self.particles.emit(self.rect.centerx, self.rect.centery, self.color_accent, [vx, random.uniform(-1, 1)], life=25, size=2)
@@ -174,16 +238,39 @@ class Player(pygame.sprite.Sprite):
             self.leap_request = 0
 
         if self._any_key(keys, self.keys_left):
-            self.rect.x -= int(5 * spd_m)
+            self.rect.x -= int(6.5 * spd_m)
         if self._any_key(keys, self.keys_right):
-            self.rect.x += int(5 * spd_m)
+            self.rect.x += int(6.5 * spd_m)
         if self._any_key(keys, self.keys_up):
-            self.speed = min(self.speed + 0.8, 12)
+            self.speed = min(self.speed + 1.0, 16)
             self.heat += 1.5
         if self._any_key(keys, self.keys_down):
-            self.speed = max(self.speed - 1, 0)
+            self.speed = max(self.speed - 1.3, 0)
 
-        self.rect.x = max(ROAD_LEFT + 5, min(self.rect.x, ROAD_RIGHT - self.rect.width - 5))
+        # Apply curve drift
+        if curve_force != 0.0:
+            self.rect.x += int(curve_force * spd_m)
+
+        self.rect.x = max(bound_left, min(self.rect.x, bound_right))
+
+        # Vehicle tilt — lean into curves + steering for 3D feel
+        target_tilt = 0.0
+        if road_geometry:
+            target_tilt = -road_geometry.current_curve * 12  # lean opposite to curve
+        if self._any_key(keys, self.keys_left):
+            target_tilt -= 5
+        if self._any_key(keys, self.keys_right):
+            target_tilt += 5
+        target_tilt = max(-15, min(15, target_tilt))
+        self.tilt_angle += (target_tilt - self.tilt_angle) * 0.15  # smooth interpolation
+
+        # Apply tilt rotation to sprite image
+        if abs(self.tilt_angle) > 0.5:
+            center = self.rect.center
+            self.image = pygame.transform.rotate(self.base_image, -self.tilt_angle)
+            self.rect = self.image.get_rect(center=center)
+        elif not self.ghost_mode:
+            self.image = self.base_image.copy()
 
         if self.vel_y != 0:
             self.vel_y += GRAVITY
@@ -205,15 +292,15 @@ class Player(pygame.sprite.Sprite):
                 self.ghost_mode = False
                 self.image = self.base_image.copy()
         elif self._any_key(keys, self.keys_boost) and self.heat > 50:
-            self.speed += 4
+            self.speed += 5
             self.heat = 0
             SFX["boost"].play()
 
         if self.flare_boost_timer > 0:
             self.flare_boost_timer -= 1
-            self.speed = min(self.speed + 0.1, 15)
+            self.speed = min(self.speed + 0.13, 20)
         else:
-            self.speed = max(self.speed - 0.15, 0)
+            self.speed = max(self.speed - 0.2, 0)
 
         self.heat = max(0, self.heat - 0.4)
         self.distance += self.speed * 0.01
@@ -240,7 +327,7 @@ class Player(pygame.sprite.Sprite):
                 self.phase = False
         if self.surge_timer > 0:
             self.surge_timer -= 1
-            self.speed = max(self.speed, 15)
+            self.speed = max(self.speed, 20)
             if self.surge_timer <= 0:
                 self.surge = False
 
@@ -284,5 +371,5 @@ class Player(pygame.sprite.Sprite):
         else:
             SFX["life_lost"].play()
             shake.trigger(8, 20)
-            self.speed = max(0, self.speed - 3)
+            self.speed = max(0, self.speed - 4)
         return True

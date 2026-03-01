@@ -24,9 +24,12 @@ class GameMode:
     MUSIC_KEY = "desert"  # key into sound.music_loops
 
     # Boss trigger thresholds — override per mode
-    BOSS_DISTANCE_THRESHOLD = 5.0   # km
-    BOSS_SCORE_THRESHOLD = 5000
-    BOSS_TIME_THRESHOLD = 180 * 60  # frames (3 min at 60fps)
+    BOSS_DISTANCE_THRESHOLD = 2.5   # km (halved for faster boss)
+    BOSS_SCORE_THRESHOLD = 2500
+    BOSS_TIME_THRESHOLD = 90 * 60   # frames (1.5 min at 60fps)
+
+    # Godmode — players are invincible
+    GOD_MODE = True
 
     def __init__(self, particles, shake, shared_state):
         self.particles = particles
@@ -50,7 +53,7 @@ class GameMode:
         self.asteroids = pygame.sprite.Group()
         self.asteroid_timer = 0
         self.asteroids_cleared = 0
-        self.ASTEROID_CLEAR_TARGET = 15
+        self.ASTEROID_CLEAR_TARGET = 20
 
         # Sprite groups — modes can add more
         self.all_sprites = pygame.sprite.Group()
@@ -67,6 +70,13 @@ class GameMode:
         """Advance one frame. Returns 'gameover', 'boss_defeated', or None."""
         self.tick += 1
         self.game_time += 1
+
+        # Godmode: keep all players invincible and alive
+        if self.GOD_MODE:
+            for p in self.players:
+                p.invincible_timer = max(p.invincible_timer, 10)
+                p.lives = max(p.lives, 3)
+
         return None
 
     def draw(self, screen):

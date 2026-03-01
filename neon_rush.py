@@ -45,7 +45,10 @@ def main():
     from core.particles import ParticleSystem
     from core.shake import ScreenShake
     from core.highscores import is_highscore
-    from core.ui import draw_title, draw_paused, draw_gameover, HighScoreEntry
+    from core.ui import (draw_title, draw_paused, draw_gameover, HighScoreEntry,
+                         MENU_ROW_MODES, MENU_ROW_DIFF, MENU_ROW_AI_REWARD,
+                         MENU_ROW_RENDER, MENU_ROW_EVOLUTION, MENU_ROW_LOGGING,
+                         MENU_NUM_ROWS, _MENU_COLS)
     from core.hud import draw_panel, draw_ai_badges
     from core.fps_monitor import FPSMonitor
     from shared.player_state import SharedPlayerState
@@ -88,6 +91,9 @@ def main():
     state = STATE_TITLE
     selected_diff = DIFF_NORMAL
     ai_reward_mult = 1
+    logging_enabled = False
+    menu_row = 0   # focused row on title screen
+    menu_col = 0   # focused column within row
     tick = 0
     ai_total_frames = 0
     highscore_entry = None
@@ -201,9 +207,9 @@ def main():
                 if current_mode:
                     current_mode.cleanup()
                 transition = TransitionEffect(
-                    'glitch', f"EVOLUTION V{new_tier}!", from_surface,
+                    'evolution', f"EVOLUTION V{new_tier}!", from_surface,
                     evolution_tier=new_tier)
-                session.update_transition('glitch', f"EVOLUTION V{new_tier}!")
+                session.update_transition('evolution', f"EVOLUTION V{new_tier}!")
                 _assign_brains_for_mode(0)
                 current_mode = MODE_CLASSES[0](particles, shake, shared_state)
                 state = STATE_TRANSITION
@@ -263,40 +269,111 @@ def main():
                     # Dashboard handles its own keys first
                     if dashboard.handle_key(event):
                         pass
-                    elif event.key in (pygame.K_1, pygame.K_KP1, pygame.K_SPACE):
-                        start_game(1)
+
+                    # --- Helper: start a game mode by column index ---
+                    def _launch_mode(col):
+                        nonlocal state
+                        if col == 0:
+                            start_game(1)
+                        elif col == 1:
+                            start_game(2)
+                        elif col == 2:
+                            ai_cfg = {"ai_players": [1], "score_mult": ai_reward_mult}
+                            start_game(2, ai_cfg)
+                        elif col == 3:
+                            ai_cfg = {"ai_players": [0], "score_mult": ai_reward_mult}
+                            start_game(1, ai_cfg)
+                        elif col == 4:
+                            ai_cfg = {"ai_players": [0, 1], "score_mult": ai_reward_mult}
+                            start_game(2, ai_cfg)
                         state = STATE_PLAY
                         SFX["select"].play()
-                    elif event.key in (pygame.K_2, pygame.K_KP2):
-                        start_game(2)
-                        state = STATE_PLAY
+
+                    def _toggle_logging():
+                        nonlocal logging_enabled
+                        logging_enabled = not logging_enabled
+                        root_log = logging.getLogger()
+                        if logging_enabled:
+                            root_log.setLevel(logging.DEBUG)
+                            logging.info("Logging: ON (DEBUG level)")
+                        else:
+                            logging.info("Logging: OFF (WARNING level)")
+                            root_log.setLevel(logging.WARNING)
+
+                    def _cycle_ai_reward(direction):
+                        nonlocal ai_reward_mult
+                        ai_vals = [1, 2, 4, 8]
+                        idx = ai_vals.index(ai_reward_mult) if ai_reward_mult in ai_vals else 0
+                        ai_reward_mult = ai_vals[max(0, min(len(ai_vals) - 1, idx + direction))]
+
+                    def _cycle_fps(direction):
+                        nonlocal target_fps
+                        idx = FPS_CAPS.index(target_fps) if target_fps in FPS_CAPS else 1
+                        target_fps = FPS_CAPS[max(0, min(len(FPS_CAPS) - 1, idx + direction))]
+                        fps_mon.target_fps = target_fps
+
+                    # === Arrow key navigation ===
+                    if event.key == pygame.K_UP:
+                        menu_row = (menu_row - 1) % MENU_NUM_ROWS
+                        menu_col = min(menu_col, _MENU_COLS[menu_row] - 1)
                         SFX["select"].play()
-                    elif event.key in (pygame.K_3, pygame.K_KP3):
-                        # Player + AI
-                        ai_cfg = {"ai_players": [1], "score_mult": ai_reward_mult}
-                        start_game(2, ai_cfg)
-                        state = STATE_PLAY
-                        SFX["select"].play()
-                    elif event.key in (pygame.K_4, pygame.K_KP4):
-                        # AI Solo
-                        ai_cfg = {"ai_players": [0], "score_mult": ai_reward_mult}
-                        start_game(1, ai_cfg)
-                        state = STATE_PLAY
-                        SFX["select"].play()
-                    elif event.key in (pygame.K_5, pygame.K_KP5):
-                        # AI + AI
-                        ai_cfg = {"ai_players": [0, 1], "score_mult": ai_reward_mult}
-                        start_game(2, ai_cfg)
-                        state = STATE_PLAY
+                    elif event.key == pygame.K_DOWN:
+                        menu_row = (menu_row + 1) % MENU_NUM_ROWS
+                        menu_col = min(menu_col, _MENU_COLS[menu_row] - 1)
                         SFX["select"].play()
                     elif event.key == pygame.K_LEFT:
-                        idx = DIFF_LIST.index(selected_diff)
-                        selected_diff = DIFF_LIST[max(0, idx - 1)]
+                        if menu_row == MENU_ROW_MODES:
+                            menu_col = max(0, menu_col - 1)
+                        elif menu_row == MENU_ROW_DIFF:
+                            idx = DIFF_LIST.index(selected_diff)
+                            selected_diff = DIFF_LIST[max(0, idx - 1)]
+                        elif menu_row == MENU_ROW_AI_REWARD:
+                            _cycle_ai_reward(-1)
+                        elif menu_row == MENU_ROW_RENDER:
+                            _cycle_fps(-1)
+                        elif menu_row == MENU_ROW_EVOLUTION:
+                            evolution_mgr.enabled = not evolution_mgr.enabled
+                        elif menu_row == MENU_ROW_LOGGING:
+                            _toggle_logging()
                         SFX["select"].play()
                     elif event.key == pygame.K_RIGHT:
-                        idx = DIFF_LIST.index(selected_diff)
-                        selected_diff = DIFF_LIST[min(len(DIFF_LIST) - 1, idx + 1)]
+                        if menu_row == MENU_ROW_MODES:
+                            menu_col = min(_MENU_COLS[MENU_ROW_MODES] - 1, menu_col + 1)
+                        elif menu_row == MENU_ROW_DIFF:
+                            idx = DIFF_LIST.index(selected_diff)
+                            selected_diff = DIFF_LIST[min(len(DIFF_LIST) - 1, idx + 1)]
+                        elif menu_row == MENU_ROW_AI_REWARD:
+                            _cycle_ai_reward(1)
+                        elif menu_row == MENU_ROW_RENDER:
+                            _cycle_fps(1)
+                        elif menu_row == MENU_ROW_EVOLUTION:
+                            evolution_mgr.enabled = not evolution_mgr.enabled
+                        elif menu_row == MENU_ROW_LOGGING:
+                            _toggle_logging()
                         SFX["select"].play()
+
+                    # === ENTER / SPACE: activate current selection ===
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                        if menu_row == MENU_ROW_MODES:
+                            _launch_mode(menu_col)
+                        elif menu_row == MENU_ROW_EVOLUTION:
+                            evolution_mgr.enabled = not evolution_mgr.enabled
+                            SFX["select"].play()
+                        elif menu_row == MENU_ROW_LOGGING:
+                            _toggle_logging()
+                            SFX["select"].play()
+
+                    # === Direct shortcut keys (still work) ===
+                    elif event.key in (pygame.K_1, pygame.K_KP1):
+                        _launch_mode(0)
+                    elif event.key in (pygame.K_2, pygame.K_KP2):
+                        _launch_mode(1)
+                    elif event.key in (pygame.K_3, pygame.K_KP3):
+                        _launch_mode(2)
+                    elif event.key in (pygame.K_4, pygame.K_KP4):
+                        _launch_mode(3)
+                    elif event.key in (pygame.K_5, pygame.K_KP5):
+                        _launch_mode(4)
                     elif event.key in (pygame.K_6, pygame.K_KP6):
                         ai_reward_mult = 1 if ai_reward_mult == 2 else 2
                         SFX["select"].play()
@@ -306,18 +383,11 @@ def main():
                     elif event.key in (pygame.K_8, pygame.K_KP8):
                         ai_reward_mult = 1 if ai_reward_mult == 8 else 8
                         SFX["select"].play()
-                    elif event.key == pygame.K_UP:
-                        idx = FPS_CAPS.index(target_fps) if target_fps in FPS_CAPS else 1
-                        target_fps = FPS_CAPS[min(len(FPS_CAPS) - 1, idx + 1)]
-                        fps_mon.target_fps = target_fps
-                        SFX["select"].play()
-                    elif event.key == pygame.K_DOWN:
-                        idx = FPS_CAPS.index(target_fps) if target_fps in FPS_CAPS else 1
-                        target_fps = FPS_CAPS[max(0, idx - 1)]
-                        fps_mon.target_fps = target_fps
-                        SFX["select"].play()
                     elif event.key == pygame.K_e:
                         evolution_mgr.enabled = not evolution_mgr.enabled
+                        SFX["select"].play()
+                    elif event.key == pygame.K_l:
+                        _toggle_logging()
                         SFX["select"].play()
                     elif event.key == pygame.K_ESCAPE:
                         running = False
@@ -482,7 +552,9 @@ def main():
             draw_title(screen, tick, selected_diff, ai_reward_mult,
                        loop_count=tick, ai_frames=ai_total_frames,
                        target_fps=target_fps, dashboard=dashboard,
-                       evolution_mgr=evolution_mgr, vsync=disp.vsync_enabled)
+                       evolution_mgr=evolution_mgr, vsync=disp.vsync_enabled,
+                       logging_enabled=logging_enabled,
+                       menu_row=menu_row, menu_col=menu_col)
 
         elif state == STATE_PLAY:
             if current_mode:
@@ -657,7 +729,7 @@ def _draw_victory(screen, shared_state, tick):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s [%(name)s] %(message)s")
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(message)s")
     preinit_heal()
 
     _pygame_ok = False

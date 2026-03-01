@@ -1,6 +1,7 @@
 import pygame
 import random
 import math
+import logging
 
 from core.constants import (
     SCREEN_WIDTH, SCREEN_HEIGHT, BLACK, NEON_CYAN, NEON_MAGENTA,
@@ -26,14 +27,17 @@ from bosses.desert_boss import DesertBoss
 from ai.controller import AIController, BrainController
 
 
+log = logging.getLogger("neon_rush.desert_velocity")
+
+
 class DesertVelocityMode(GameMode):
     MODE_NAME = "DESERT VELOCITY"
     MODE_INDEX = MODE_DESERT
     MUSIC_KEY = "desert"
 
-    BOSS_DISTANCE_THRESHOLD = 5.0
-    BOSS_SCORE_THRESHOLD = 5000
-    BOSS_TIME_THRESHOLD = 180 * 60  # 3 min
+    BOSS_DISTANCE_THRESHOLD = 2.5
+    BOSS_SCORE_THRESHOLD = 2500
+    BOSS_TIME_THRESHOLD = 90 * 60  # 1.5 min
 
     def __init__(self, particles, shake, shared_state):
         super().__init__(particles, shake, shared_state)
@@ -55,16 +59,23 @@ class DesertVelocityMode(GameMode):
         self.floating_texts = []
         self.milestone = MilestoneTracker()
 
+        # Road geometry for V2 pseudo-3D
+        self._tier = shared_state.evolution_tier
+        self.road_geometry = self.bg.road_geometry  # None for V1
+        log.info("DesertVelocityMode init: tier=%d, road_geometry=%s",
+                 self._tier, "active" if self.road_geometry else "none")
+
     def setup(self):
         diff = self.shared_state.difficulty
         selected_diff = diff if diff in DIFFICULTY_SETTINGS else DIFF_NORMAL
 
+        tier = self.shared_state.evolution_tier
         if self.two_player:
-            p1 = Player(self.particles, 1, ROAD_CENTER - 60, diff=selected_diff)
-            p2 = Player(self.particles, 2, ROAD_CENTER + 60, diff=selected_diff)
+            p1 = Player(self.particles, 1, ROAD_CENTER - 60, diff=selected_diff, tier=tier)
+            p2 = Player(self.particles, 2, ROAD_CENTER + 60, diff=selected_diff, tier=tier)
             self.players = [p1, p2]
         else:
-            p1 = Player(self.particles, 1, ROAD_CENTER, solo=True, diff=selected_diff)
+            p1 = Player(self.particles, 1, ROAD_CENTER, solo=True, diff=selected_diff, tier=tier)
             self.players = [p1]
 
         # Inject carried state from previous modes (if any)
@@ -145,15 +156,28 @@ class DesertVelocityMode(GameMode):
         max_speed = max(p.speed for p in alive_players)
         scroll_speed = max_speed * slowmo_mult
 
+        # Advance road geometry (needed for V2 sprite projection, even in headless)
+        if self._tier >= 2:
+            self.bg.tick_road(scroll_speed * (0.5 if any_slowmo else 1.0))
+
         for ai in self.ai_controllers:
             ai.update(self)
 
         for p in self.players:
-            p.update(keys, any_slowmo)
+            p.update(keys, any_slowmo, road_geometry=self.road_geometry)
 
         self.game_distance += scroll_speed * 0.01
         self.difficulty_scale = 1.0 + self.game_distance * 0.15
         diff_s = DIFFICULTY_SETTINGS.get(self.difficulty, DIFFICULTY_SETTINGS[DIFF_NORMAL])
+
+        # Periodic status log (~every 3s at 144fps)
+        if self.tick % 432 == 0:
+            rg = self.road_geometry
+            curve_info = f"curve={rg.current_curve:.3f}" if rg else "no_rg"
+            log.info("tick=%d dist=%.2f spd=%.1f obs=%d coins=%d pups=%d flares=%d | %s",
+                     self.tick, self.game_distance, scroll_speed,
+                     len(self.obstacles), len(self.coins_group),
+                     len(self.powerups_group), len(self.flares), curve_info)
 
         self.milestone.check(self.game_distance)
         self.milestone.update()
@@ -168,9 +192,10 @@ class DesertVelocityMode(GameMode):
         if self.boss_active and self.boss:
             self.boss.update(alive_players, scroll_speed)
 
-            # Check heat bolt firing
+            # Check heat bolt firing (auto-fire when boss is alive)
+            has_target = self.boss and self.boss.alive
             for p in alive_players:
-                fired, bx, by = p.try_fire_heat_bolt(keys)
+                fired, bx, by = p.try_fire_heat_bolt(keys, auto_fire=has_target)
                 if fired:
                     bolt = HeatBolt(bx, by, p.color_accent)
                     self.heat_bolts.add(bolt)
@@ -262,47 +287,69 @@ class DesertVelocityMode(GameMode):
         self.obstacle_timer += 1
         spawn_rate = max(12, int(45 / (self.difficulty_scale * diff_s["spawn_div"])))
         if self.obstacle_timer > spawn_rate and random.random() < spawn_mult:
-            obs = Obstacle(min(self.difficulty_scale * diff_s["obstacle_mult"], 3.0))
+            if self._tier >= 2:
+                lane = random.uniform(-0.8, 0.8)
+                obs = Obstacle(min(self.difficulty_scale * diff_s["obstacle_mult"], 3.0),
+                               tier=self._tier, lane_offset=lane)
+            else:
+                obs = Obstacle(min(self.difficulty_scale * diff_s["obstacle_mult"], 3.0))
             self.all_sprites.add(obs)
             self.obstacles.add(obs)
             self.obstacle_timer = 0
 
         self.coin_timer += 1
         if self.coin_timer > diff_s.get("coin_interval", 40):
-            c = Coin()
+            if self._tier >= 2:
+                lane = random.uniform(-0.7, 0.7)
+                c = Coin(tier=self._tier, lane_offset=lane)
+            else:
+                c = Coin()
             self.all_sprites.add(c)
             self.coins_group.add(c)
             self.coin_timer = 0
 
         self.powerup_timer += 1
         if self.powerup_timer > diff_s.get("powerup_interval", 600):
-            pu = PowerUp()
+            if self._tier >= 2:
+                lane = random.uniform(-0.6, 0.6)
+                pu = PowerUp(tier=self._tier, lane_offset=lane)
+            else:
+                pu = PowerUp()
             self.all_sprites.add(pu)
             self.powerups_group.add(pu)
             self.powerup_timer = 0
 
         self.flare_timer -= 1
         if self.flare_timer <= 0:
-            flare_x = random.randint(ROAD_LEFT + 30, ROAD_RIGHT - 30)
-            flare = SolarFlare(self.particles, flare_x)
+            if self._tier >= 2:
+                lane = random.uniform(-0.5, 0.5)
+                flare = SolarFlare(self.particles, ROAD_CENTER, tier=self._tier, lane_offset=lane)
+            else:
+                flare_x = random.randint(ROAD_LEFT + 30, ROAD_RIGHT - 30)
+                flare = SolarFlare(self.particles, flare_x)
             self.all_sprites.add(flare)
             self.flares.add(flare)
             self.flare_timer = random.randint(600, 1200)
 
         # Update sprites
+        rg = self.road_geometry
         for obs in list(self.obstacles):
-            obs.update(scroll_speed)
+            obs.update(scroll_speed, road_geometry=rg)
         for c in list(self.coins_group):
-            c.update(scroll_speed, alive_players)
+            c.update(scroll_speed, alive_players, road_geometry=rg)
         for pu in list(self.powerups_group):
-            pu.update(scroll_speed)
+            pu.update(scroll_speed, road_geometry=rg)
         for flare in list(self.flares):
-            flare.update(scroll_speed, alive_players)
+            flare.update(scroll_speed, alive_players, road_geometry=rg)
 
         # Collisions (non-boss)
         for p in alive_players:
             if p.invincible_timer <= 0 and not p.ghost_mode and not p.phase:
                 hit = pygame.sprite.spritecollideany(p, self.obstacles)
+                if hit:
+                    # V2 guard: only collide with projected (near) sprites
+                    if not getattr(hit, '_projected', True):
+                        hit = None
                 if hit:
                     hit.kill()
                     p.take_hit(self.shake)
@@ -310,6 +357,9 @@ class DesertVelocityMode(GameMode):
                         return 'gameover'
 
             collected_coins = pygame.sprite.spritecollide(p, self.coins_group, True)
+            # V2 guard: filter out non-projected coins
+            if self._tier >= 2:
+                collected_coins = [c for c in collected_coins if getattr(c, '_projected', True)]
             for _ in collected_coins:
                 p.coins += 1
                 p.combo.hit()
@@ -322,6 +372,9 @@ class DesertVelocityMode(GameMode):
                 SFX["coin"].play()
 
             collected_pups = pygame.sprite.spritecollide(p, self.powerups_group, True)
+            # V2 guard: filter out non-projected powerups
+            if self._tier >= 2:
+                collected_pups = [pu for pu in collected_pups if getattr(pu, '_projected', True)]
             for pu in collected_pups:
                 if pu.kind == POWERUP_SHIELD:
                     p.shield = True
@@ -387,9 +440,10 @@ class DesertVelocityMode(GameMode):
 
     def _update_asteroid_phase(self, keys, alive_players, scroll_speed, diff_s):
         """Handle asteroid phase: spawn, shoot, collide, check boss trigger."""
-        # Fire heat bolts
+        # Fire heat bolts (auto-fire when asteroids on screen)
+        has_target = len(self.asteroids) > 0
         for p in alive_players:
-            fired, bx, by = p.try_fire_heat_bolt(keys)
+            fired, bx, by = p.try_fire_heat_bolt(keys, auto_fire=has_target)
             if fired:
                 bolt = HeatBolt(bx, by, p.color_accent)
                 self.heat_bolts.add(bolt)
@@ -407,15 +461,31 @@ class DesertVelocityMode(GameMode):
                                          [SOLAR_YELLOW, SOLAR_WHITE], 6, 3, 20, 2)
                     bolt.kill()
                     if destroyed:
-                        self.particles.burst(*ast.get_death_particles())
+                        # Award points for ALL kills (split and terminal)
                         for p in alive_players:
                             pts = ast.points * p.score_mult
                             p.score += pts
                             self.floating_texts.append(
                                 FloatingText(ast.rect.centerx, ast.rect.top - 10,
                                              f"+{pts}", SOLAR_YELLOW))
-                        self.asteroids_cleared += 1
-                        SFX["asteroid_destroy"].play()
+                        if destroyed['terminal']:
+                            # Small asteroid — final death
+                            self.particles.burst(*ast.get_death_particles())
+                            self.asteroids_cleared += 1
+                            SFX["asteroid_destroy"].play()
+                        else:
+                            # Split into fragments
+                            self.particles.burst(*ast.get_split_particles())
+                            self.shake.trigger(3, 8)
+                            SFX["asteroid_split"].play()
+                            for frag_info in destroyed['fragments']:
+                                if self._tier >= 2 and ast.tier >= 2:
+                                    lo = getattr(ast, 'lane_offset', 0) or 0
+                                    frag_info['lane_offset'] = lo + random.uniform(-0.15, 0.15)
+                                    frag_info['tier'] = ast.tier
+                                child = Asteroid.spawn_fragment(frag_info)
+                                self.asteroids.add(child)
+                                self.all_sprites.add(child)
                     else:
                         SFX["asteroid_hit"].play()
                     break
@@ -423,20 +493,28 @@ class DesertVelocityMode(GameMode):
         # Spawn asteroids
         self.asteroid_timer += 1
         if self.asteroid_timer > 40:
-            ax = random.randint(ROAD_LEFT + 20, ROAD_RIGHT - 20)
-            ast = Asteroid(ax, -50, direction=DIR_DOWN)
+            if self._tier >= 2:
+                lane = random.uniform(-0.8, 0.8)
+                ax = ROAD_CENTER
+                ast = Asteroid(ax, -50, direction=DIR_DOWN, tier=self._tier, lane_offset=lane)
+            else:
+                ax = random.randint(ROAD_LEFT + 20, ROAD_RIGHT - 20)
+                ast = Asteroid(ax, -50, direction=DIR_DOWN)
             self.asteroids.add(ast)
             self.all_sprites.add(ast)
             self.asteroid_timer = 0
 
         # Update asteroids
+        rg = self.road_geometry
         for ast in list(self.asteroids):
-            ast.update(scroll_speed)
+            ast.update(scroll_speed, road_geometry=rg)
 
         # Asteroid-player collision
         for p in alive_players:
             if p.invincible_timer <= 0 and not p.ghost_mode and not p.phase:
                 hit = pygame.sprite.spritecollideany(p, self.asteroids)
+                if hit and not getattr(hit, '_projected', True):
+                    hit = None
                 if hit:
                     hit.kill()
                     p.take_hit(self.shake)
@@ -475,7 +553,14 @@ class DesertVelocityMode(GameMode):
             self.screen_flash -= 1
 
         self.particles.draw(screen)
-        self.all_sprites.draw(screen)
+        if self._tier >= 2:
+            # Sort sprites back-to-front by world_z for correct overdraw
+            sprites_sorted = sorted(self.all_sprites.sprites(),
+                                    key=lambda s: getattr(s, 'world_z', 0), reverse=True)
+            for s in sprites_sorted:
+                screen.blit(s.image, s.rect)
+        else:
+            self.all_sprites.draw(screen)
 
         # Shield bubble
         for p in alive_players:
@@ -501,7 +586,7 @@ class DesertVelocityMode(GameMode):
             tint.fill((0, 50, 30, 25))
             screen.blit(tint, (0, 0))
 
-        draw_hud(screen, self.players, self.game_distance, self.flare_timer, self.two_player)
+        draw_hud(screen, self.players, self.game_distance, self.flare_timer, self.two_player, tier=self._tier)
 
         for ft in self.floating_texts:
             ft.draw(screen)

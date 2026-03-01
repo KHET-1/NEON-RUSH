@@ -200,6 +200,8 @@ class MicroMachinesBG:
         if tier >= 2:
             self._haze_phase = 0.0
             self._tire_marks = self._gen_tire_marks()
+            # Pre-allocate fog surface (PERF FIX: was creating new 800x600 SRCALPHA every frame)
+            self._haze_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
 
         # Parallax off-track layers
         self.layer_close = OffTrackLayer(
@@ -231,6 +233,53 @@ class MicroMachinesBG:
             ex = x + int(math.sin(angle) * length)
             ey = y + int(math.cos(angle) * length)
             pygame.draw.line(self.layer_far.tile, color, (x, y), (ex, ey), 2)
+
+        # V2+: Bake cyberpunk grid lines onto far tile (zero runtime cost)
+        if tier >= 2:
+            grid_color = (0, 180, 200, 25)
+            grid_spacing = 40
+            for gx in range(0, SCREEN_WIDTH, grid_spacing):
+                pygame.draw.line(self.layer_far.tile, grid_color,
+                                 (gx, 0), (gx, self.layer_far.tile_height), 1)
+            for gy in range(0, self.layer_far.tile_height, grid_spacing):
+                pygame.draw.line(self.layer_far.tile, grid_color,
+                                 (0, gy), (SCREEN_WIDTH, gy), 1)
+
+            # Bake environment details onto close tile (zero runtime cost)
+            env_rng = random.Random(99)
+            for _ in range(25):
+                ex = env_rng.randint(10, SCREEN_WIDTH - 10)
+                ey = env_rng.randint(10, self.layer_close.tile_height - 10)
+                detail_type = env_rng.choice(['building', 'lamp', 'crate'])
+                if detail_type == 'building':
+                    bw = env_rng.randint(12, 30)
+                    bh = env_rng.randint(15, 35)
+                    pygame.draw.rect(self.layer_close.tile, (30, 28, 38),
+                                     (ex, ey, bw, bh))
+                    pygame.draw.rect(self.layer_close.tile, (45, 42, 55),
+                                     (ex, ey, bw, bh), 1)
+                    # Lit windows
+                    for wx in range(ex + 3, ex + bw - 3, 6):
+                        for wy in range(ey + 3, ey + bh - 3, 6):
+                            if env_rng.random() < 0.6:
+                                wc = env_rng.choice([
+                                    (255, 220, 100, 80), (100, 200, 255, 60),
+                                    (255, 150, 50, 70),
+                                ])
+                                pygame.draw.rect(self.layer_close.tile, wc,
+                                                 (wx, wy, 3, 3))
+                elif detail_type == 'lamp':
+                    # Thin line + glow dot
+                    pygame.draw.line(self.layer_close.tile, (50, 50, 55),
+                                     (ex, ey), (ex, ey + 10), 1)
+                    pygame.draw.circle(self.layer_close.tile, (200, 200, 150, 100),
+                                       (ex, ey), 3)
+                else:  # crate
+                    cw = env_rng.randint(6, 12)
+                    pygame.draw.rect(self.layer_close.tile, (50, 40, 30),
+                                     (ex, ey, cw, cw))
+                    pygame.draw.rect(self.layer_close.tile, (70, 55, 40),
+                                     (ex, ey, cw, cw), 1)
 
         # Center dash state
         self.dash_offset = 0.0
@@ -395,12 +444,31 @@ class MicroMachinesBG:
             left = int(cx - HALF_TRACK)
             right = int(cx + HALF_TRACK)
 
-            # Road surface
-            pygame.draw.line(screen, ROAD_COLOR, (left, y), (right, y))
+            # Road surface — V2+: alternate two close shades per-scanline
+            if self.tier >= 2:
+                world_y = y + self.scroll_offset
+                if int(world_y) % 6 < 3:
+                    road_col = (30, 28, 42)
+                else:
+                    road_col = (38, 35, 50)
+                pygame.draw.line(screen, road_col, (left, y), (right, y))
+            else:
+                pygame.draw.line(screen, ROAD_COLOR, (left, y), (right, y))
 
             # Road edges (neon cyan lines)
             pygame.draw.line(screen, ROAD_EDGE_COLOR, (left, y), (left + 2, y), 3)
             pygame.draw.line(screen, ROAD_EDGE_COLOR, (right - 2, y), (right, y), 3)
+
+            # V2+: Edge glow (every 2nd scanline)
+            if self.tier >= 2 and y % 2 == 0:
+                edge_s = pygame.Surface((6, 1), pygame.SRCALPHA)
+                edge_s.fill((*ROAD_EDGE_COLOR[:3], 40))
+                screen.blit(edge_s, (left - 3, y))
+                screen.blit(edge_s, (right - 3, y))
+                edge_s2 = pygame.Surface((10, 1), pygame.SRCALPHA)
+                edge_s2.fill((*ROAD_EDGE_COLOR[:3], 15))
+                screen.blit(edge_s2, (left - 5, y))
+                screen.blit(edge_s2, (right - 5, y))
 
             # Rumble strips on outside of curves
             if seg.rumble_side and seg.seg_type not in (SEG_STRAIGHT,):
@@ -420,6 +488,17 @@ class MicroMachinesBG:
             if dash_pos < CENTER_DASH_LEN:
                 icx = int(cx)
                 pygame.draw.line(screen, CENTER_LINE_COLOR, (icx - 1, y), (icx + 1, y), 2)
+
+            # V2+: Track edge pulse flash every ~200 world-px
+            if self.tier >= 2:
+                world_y = y + self.scroll_offset
+                pulse_phase = world_y % 200
+                if pulse_phase < 30:
+                    flash_a = int(60 * (1 - pulse_phase / 30))
+                    fs = pygame.Surface((4, 1), pygame.SRCALPHA)
+                    fs.fill((255, 0, 120, flash_a))
+                    screen.blit(fs, (left - 2, y))
+                    screen.blit(fs, (right - 2, y))
 
             prev_cx = cx
             y += step
@@ -442,11 +521,10 @@ class MicroMachinesBG:
 
     def _draw_v2_overlay(self, screen):
         """V2+ visual enhancements: atmosphere fog, oil stains, tire marks, enhanced rumble."""
-        # Pulsing atmosphere fog overlay (depth effect)
+        # Pulsing atmosphere fog overlay — PERF FIX: reuse pre-allocated surface
         haze_alpha = int(10 + 6 * math.sin(self._haze_phase))
-        haze = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        haze.fill((18, 15, 22, haze_alpha))
-        screen.blit(haze, (0, 0))
+        self._haze_surf.fill((18, 15, 22, haze_alpha))
+        screen.blit(self._haze_surf, (0, 0))
 
         # Oil stains + tire marks on visible road segments
         mark_color = (35, 33, 30)

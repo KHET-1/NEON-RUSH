@@ -219,6 +219,7 @@ def init_sounds():
         "evolve": generate_sweep(300, 900, 400, 0.2),
         "asteroid_hit": generate_tone(200, 150, 0.25, "noise"),
         "asteroid_destroy": generate_sweep(150, 600, 200, 0.3),
+        "asteroid_split": generate_sweep(300, 100, 250, 0.3),
         "asteroid_warning": generate_sweep(400, 200, 300, 0.2),
     })
 

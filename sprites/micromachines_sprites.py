@@ -14,13 +14,14 @@ from core.constants import (
 class MicroPlayer(pygame.sprite.Sprite):
     """Top-down tiny car with rotation steering and drift=heat."""
 
-    def __init__(self, particles, player_num=1, solo=False, diff="normal"):
+    def __init__(self, particles, player_num=1, solo=False, diff="normal", tier=1):
         super().__init__()
         self.player_num = player_num
         self.particles = particles
         self.is_ai = False
         self._ai_keys = {}
         self.score_mult = 1
+        self.tier = tier
 
         if player_num == 1:
             self.color_main = (0, 180, 200)
@@ -62,7 +63,7 @@ class MicroPlayer(pygame.sprite.Sprite):
         self.heat = 0.0
         self.drift_angle = 0.0
 
-        self.base_surf = self._make_car()
+        self.base_surf = self._make_car_v2() if tier >= 2 else self._make_car()
         self.image = self.base_surf.copy()
         self.rect = self.image.get_rect(center=(int(self.px), int(self.py)))
 
@@ -106,6 +107,31 @@ class MicroPlayer(pygame.sprite.Sprite):
             pygame.draw.rect(surf, (50, 50, 50), (wx, 19, 3, 6))
         return surf
 
+    def _make_car_v2(self):
+        """V2+ car with underglow, detail shading, windshield glint, exhaust glow."""
+        surf = pygame.Surface((24, 32), pygame.SRCALPHA)
+        # Underglow ellipse
+        pygame.draw.ellipse(surf, (*self.color_accent, 35), (2, 6, 20, 24))
+        # Body
+        pygame.draw.rect(surf, self.color_main, (4, 2, 16, 28), border_radius=4)
+        # Side shading
+        side_dark = tuple(max(0, c - 40) for c in self.color_main)
+        pygame.draw.rect(surf, side_dark, (4, 2, 3, 28), border_radius=2)
+        pygame.draw.rect(surf, side_dark, (17, 2, 3, 28), border_radius=2)
+        # Windshield with glint
+        pygame.draw.rect(surf, (*self.color_accent, 160), (6, 3, 12, 10), border_radius=2)
+        pygame.draw.line(surf, (255, 255, 255), (7, 4), (16, 4), 1)
+        # Rear exhaust glow
+        pygame.draw.rect(surf, (255, 120, 40, 120), (6, 26, 12, 4))
+        pygame.draw.rect(surf, (255, 200, 100, 80), (8, 27, 8, 2))
+        # Wheels (with highlights)
+        for wx in [1, 20]:
+            pygame.draw.rect(surf, (40, 40, 40), (wx, 5, 3, 7))
+            pygame.draw.rect(surf, (40, 40, 40), (wx, 21, 3, 7))
+            pygame.draw.rect(surf, (70, 70, 70), (wx, 6, 3, 2))
+            pygame.draw.rect(surf, (70, 70, 70), (wx, 22, 3, 2))
+        return surf
+
     def _any_key(self, keys, key_list):
         if self.is_ai:
             for name, grp in self._key_groups.items():
@@ -114,9 +140,12 @@ class MicroPlayer(pygame.sprite.Sprite):
             return False
         return any(keys[k] for k in key_list)
 
-    def try_fire_heat_bolt(self, keys):
+    def try_fire_heat_bolt(self, keys, auto_fire=False):
         if not self.alive or self.fire_cooldown > 0:
             return False, 0, 0
+        if auto_fire:
+            self.fire_cooldown = 12
+            return True, self.rect.centerx, self.rect.centery
         if self._any_key(keys, self.key_fire) and self.heat >= 40:
             self.heat -= 40
             self.fire_cooldown = 30
@@ -133,7 +162,7 @@ class MicroPlayer(pygame.sprite.Sprite):
             self.fire_cooldown -= 1
 
         # Steering
-        turn_speed = 0.05
+        turn_speed = 0.065
         turning = False
         if self._any_key(keys, self.key_left):
             self.angle -= turn_speed
@@ -144,10 +173,10 @@ class MicroPlayer(pygame.sprite.Sprite):
 
         # Accel/brake
         if self._any_key(keys, self.key_up):
-            self.speed = min(self.speed + 0.2, 6)
+            self.speed = min(self.speed + 0.26, 8)
             self.heat += 0.8
         if self._any_key(keys, self.key_down):
-            self.speed = max(self.speed - 0.3, -2)
+            self.speed = max(self.speed - 0.4, -2.6)
 
         # Drift builds heat when turning at speed
         if turning and self.speed > 2:
@@ -155,7 +184,7 @@ class MicroPlayer(pygame.sprite.Sprite):
 
         # Boost
         if self._any_key(keys, self.key_boost) and self.heat > 50:
-            self.speed += 3
+            self.speed += 4
             self.heat = 0
             from core.sound import SFX
             SFX["boost"].play()
@@ -210,16 +239,31 @@ class MicroPlayer(pygame.sprite.Sprite):
                 self.phase = False
         if self.surge_timer > 0:
             self.surge_timer -= 1
-            self.speed = max(self.speed, 8)
+            self.speed = max(self.speed, 10)
             if self.surge_timer <= 0:
                 self.surge = False
 
         # Tire smoke when drifting
         if turning and self.speed > 3:
-            self.particles.emit(
-                self.rect.centerx, self.rect.centery,
-                (150, 150, 150),
-                [random.uniform(-1, 1), random.uniform(-1, 1)], 15, 2)
+            # V2+: more smoke particles, larger
+            count = 3 if self.tier >= 2 else 1
+            size = 3 if self.tier >= 2 else 2
+            for _ in range(count):
+                self.particles.emit(
+                    self.rect.centerx, self.rect.centery,
+                    (150, 150, 150),
+                    [random.uniform(-1, 1), random.uniform(-1, 1)], 15, size)
+
+        # V2+: Exhaust particles
+        if self.tier >= 2 and abs(self.speed) > 1:
+            # Emit 2 exhaust particles from rear
+            rear_x = self.rect.centerx - int(math.cos(self.angle) * 12)
+            rear_y = self.rect.centery - int(math.sin(self.angle) * 12)
+            for _ in range(2):
+                ec = random.choice([(255, 120, 40), (200, 100, 30), (150, 150, 150)])
+                evx = -math.cos(self.angle) * random.uniform(0.5, 1.5) + random.uniform(-0.3, 0.3)
+                evy = -math.sin(self.angle) * random.uniform(0.5, 1.5) + random.uniform(-0.3, 0.3)
+                self.particles.emit(rear_x, rear_y, ec, [evx, evy], 20, 2)
 
         self.combo.update()
 
@@ -253,12 +297,19 @@ class MicroPlayer(pygame.sprite.Sprite):
 
 class OilSlickHazard(pygame.sprite.Sprite):
     """Oil slick on track that spins the player."""
-    def __init__(self, x, y):
+    def __init__(self, x, y, tier=1):
         super().__init__()
         w, h = random.randint(30, 50), random.randint(20, 35)
         self.image = pygame.Surface((w, h), pygame.SRCALPHA)
-        pygame.draw.ellipse(self.image, (20, 20, 30, 160), (0, 0, w, h))
-        pygame.draw.ellipse(self.image, (40, 30, 50, 100), (4, 4, w - 8, h - 8))
+        if tier >= 2:
+            # V2+: Rainbow iridescence — 3 overlapping ellipses with shifted hues
+            pygame.draw.ellipse(self.image, (20, 20, 30, 140), (0, 0, w, h))
+            pygame.draw.ellipse(self.image, (60, 20, 80, 70), (2, 2, w - 4, h - 4))
+            pygame.draw.ellipse(self.image, (20, 60, 60, 50), (6, 4, w - 12, h - 8))
+            pygame.draw.ellipse(self.image, (80, 40, 120, 40), (8, 6, w - 16, h - 12))
+        else:
+            pygame.draw.ellipse(self.image, (20, 20, 30, 160), (0, 0, w, h))
+            pygame.draw.ellipse(self.image, (40, 30, 50, 100), (4, 4, w - 8, h - 8))
         self.rect = self.image.get_rect(center=(x, y))
 
     def update(self, scroll_speed):

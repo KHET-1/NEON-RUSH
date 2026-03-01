@@ -7,6 +7,7 @@ from core.constants import (
     SCREEN_WIDTH, SCREEN_HEIGHT,
     ASTEROID_GRAY, ASTEROID_GLOW, SOLAR_YELLOW, SOLAR_WHITE,
 )
+from sprites.road_sprite import RoadSpriteMixin
 
 # Direction constants
 DIR_DOWN = "down"    # Desert / Micro Machines (vertical scroll)
@@ -17,6 +18,13 @@ SIZES = {
     "small":  {"hp": 15, "bolts": 1, "pts": 100, "radius": 14},
     "medium": {"hp": 30, "bolts": 2, "pts": 250, "radius": 22},
     "large":  {"hp": 45, "bolts": 3, "pts": 500, "radius": 32},
+}
+
+# Fragment chain: what each size splits into on destruction
+FRAGMENT_CHAIN = {
+    "large":  ("medium", 2),
+    "medium": ("small", 2),
+    "small":  None,          # terminal — dies for good
 }
 
 
@@ -30,10 +38,10 @@ def _pick_size():
     return "large"
 
 
-class Asteroid(pygame.sprite.Sprite):
+class Asteroid(RoadSpriteMixin, pygame.sprite.Sprite):
     """Procedural asteroid with irregular polygon, glow, cracks, and HP dots."""
 
-    def __init__(self, x, y, direction=DIR_DOWN, size=None):
+    def __init__(self, x, y, direction=DIR_DOWN, size=None, tier=1, lane_offset=None):
         super().__init__()
         self.size_name = size or _pick_size()
         cfg = SIZES[self.size_name]
@@ -44,13 +52,13 @@ class Asteroid(pygame.sprite.Sprite):
         self.base_radius = cfg["radius"]
         self.direction = direction
 
-        # Movement
+        # Movement (slow drift — gives time to shoot)
         if direction == DIR_DOWN:
-            self.vx = random.uniform(-0.3, 0.3)
-            self.vy = random.uniform(1.5, 3.5)
+            self.vx = random.uniform(-0.15, 0.15)
+            self.vy = random.uniform(0.6, 1.4)
         else:  # DIR_LEFT
-            self.vx = random.uniform(-3.5, -1.5)
-            self.vy = random.uniform(-0.3, 0.3)
+            self.vx = random.uniform(-1.4, -0.6)
+            self.vy = random.uniform(-0.15, 0.15)
 
         # Rotation / wobble
         self.angle = random.uniform(0, 360)
@@ -75,10 +83,16 @@ class Asteroid(pygame.sprite.Sprite):
             r2 = random.uniform(0.5, 0.9) * self.base_radius
             self.cracks.append((a1, r1, a2, r2))
 
+        self.tier = tier
+
         # Build initial surface
         self._build_surface()
         self.rect = self.image.get_rect(center=(x, y))
         self.fx, self.fy = float(x), float(y)
+
+        if tier >= 2 and direction == DIR_DOWN and lane_offset is not None:
+            self.rect.center = (-999, -999)
+            self.init_road(world_z=800.0, lane_offset=lane_offset)
 
     def _build_surface(self):
         """Render the asteroid polygon with glow + cracks + HP dots."""
@@ -126,23 +140,94 @@ class Asteroid(pygame.sprite.Sprite):
             pygame.draw.circle(self.image, color, (int(start_x + i * 6 + 3), int(dot_y)), 2)
 
     def take_hit(self, damage):
-        """Apply damage. Returns True if destroyed."""
+        """Apply damage. Returns dict with fragment info if destroyed, False if alive.
+        Dict is truthy so `if destroyed:` still works."""
         self.hp -= damage
         if self.hp <= 0:
+            chain = FRAGMENT_CHAIN.get(self.size_name)
+            result = {
+                'terminal': chain is None,
+                'fragments': self._get_fragment_info() if chain else [],
+            }
             self.kill()
-            return True
+            return result
         # Rebuild surface to update HP dots
         self._build_surface()
         old_center = self.rect.center
         self.rect = self.image.get_rect(center=old_center)
         return False
 
-    def update(self, scroll_speed):
+    def _get_fragment_info(self):
+        """Compute spawn info for child fragments."""
+        chain = FRAGMENT_CHAIN.get(self.size_name)
+        if not chain:
+            return []
+        child_size, count = chain
+        cx, cy = self.rect.center
+        spread = self.base_radius * 0.6
+        fragments = []
+        for i in range(count):
+            # Fan children outward from parent center
+            sign = -1 if i == 0 else 1
+            if self.direction == DIR_DOWN:
+                fx = cx + sign * spread
+                fy = cy
+                child_vx = self.vx + sign * random.uniform(0.5, 1.0)
+                child_vy = self.vy * 1.2
+            else:  # DIR_LEFT
+                fx = cx
+                fy = cy + sign * spread
+                child_vx = self.vx * 1.2
+                child_vy = self.vy + sign * random.uniform(0.5, 1.0)
+            fragments.append({
+                'size': child_size,
+                'x': fx, 'y': fy,
+                'vx': child_vx, 'vy': child_vy,
+                'direction': self.direction,
+                'tier': self.tier,
+                'lane_offset': getattr(self, 'lane_offset', None),
+            })
+        return fragments
+
+    @classmethod
+    def spawn_fragment(cls, info):
+        """Create a child asteroid from fragment info dict."""
+        ast = cls(info['x'], info['y'],
+                  direction=info['direction'],
+                  size=info['size'],
+                  tier=info.get('tier', 1),
+                  lane_offset=info.get('lane_offset'))
+        # Override velocity with inherited + spread values
+        ast.vx = info['vx']
+        ast.vy = info['vy']
+        # Faster spin for fragments
+        ast.spin_speed = random.uniform(-4.0, 4.0)
+        return ast
+
+    def get_split_particles(self):
+        """Smaller particle burst for splitting (not terminal death)."""
+        count = {"large": 10, "medium": 7, "small": 5}.get(self.size_name, 6)
+        return (
+            self.rect.centerx, self.rect.centery,
+            [ASTEROID_GRAY, SOLAR_YELLOW, (255, 180, 80)],
+            count, 2, 20, 2,
+        )
+
+    def update(self, scroll_speed, road_geometry=None):
         """Move + spin + wobble."""
         self.angle += self.spin_speed
         self.wobble_phase += 0.05
 
-        # Base movement
+        if self.tier >= 2 and road_geometry and self.direction == DIR_DOWN and hasattr(self, 'world_z'):
+            # Perspective mode: use road sprite projection
+            self.advance_toward_camera(scroll_speed * 0.5 + self.vy)
+            self._build_surface()
+            self._original_image = self.image.copy()
+            if not self.project(road_geometry):
+                self.kill()
+            return
+
+        # Classic movement
         if self.direction == DIR_DOWN:
             self.fy += self.vy + scroll_speed * 0.5
             self.fx += self.vx + math.sin(self.wobble_phase) * self.wobble_amp

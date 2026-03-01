@@ -2,7 +2,7 @@ import pygame
 from core.constants import SCREEN_WIDTH, SCREEN_HEIGHT
 
 current_scale = 1
-is_fullscreen = False
+is_fullscreen = True
 display_surface = None
 vsync_enabled = True  # VSync on by default
 

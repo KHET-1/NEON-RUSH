@@ -359,12 +359,14 @@ class SmartKeys:
             # move == 1: straight (no key)
 
             # Apply boost (only if we have heat and not in ghost mode)
+            shooting_phase_active = boss_active or (mode and getattr(mode, 'phase', '') == 'asteroids')
             if boost and hasattr(p, 'heat') and p.heat > 50 and not getattr(p, 'ghost_mode', False):
-                if not boss_active:  # Save heat for bolts during boss
+                if not shooting_phase_active:  # Save heat for bolts during boss/asteroids
                     self._pressed[k_boost] = True
 
-            # Apply fire (only during boss if we have heat)
-            if fire and boss_active and hasattr(p, 'heat') and p.heat >= 42:
+            # Apply fire (during boss or asteroid phase if we have heat)
+            shooting_phase = boss_active or (mode and getattr(mode, 'phase', '') == 'asteroids')
+            if fire and shooting_phase and hasattr(p, 'heat') and p.heat >= 42:
                 if hasattr(p, 'fire_cooldown') and p.fire_cooldown <= 0:
                     self._pressed[k_fire] = True
 
@@ -484,6 +486,29 @@ class FakeKeys:
                         self._pressed[k_left] = True
                         self._pressed.pop(k_right, None)
                     self._pressed[k_up] = True
+            elif mode and getattr(mode, 'phase', '') == 'asteroids':
+                # Fire at asteroids during asteroid phase
+                if hasattr(p, 'heat') and p.heat >= 42 and hasattr(p, 'fire_cooldown') and p.fire_cooldown <= 0:
+                    self._pressed[k_fire] = True
+                # Steer toward nearest asteroid to line up shots
+                best_ast = None
+                best_d = 9999
+                for ast in getattr(mode, 'asteroids', []):
+                    if not getattr(ast, '_projected', True):
+                        continue
+                    d = abs(ast.rect.centerx - px)
+                    if d < best_d:
+                        best_d = d
+                        best_ast = ast
+                if best_ast:
+                    dx = best_ast.rect.centerx - px
+                    if abs(dx) > 15:
+                        self._pressed.pop(k_left, None)
+                        self._pressed.pop(k_right, None)
+                        if dx < 0:
+                            self._pressed[k_left] = True
+                        else:
+                            self._pressed[k_right] = True
             else:
                 if hasattr(p, 'heat') and p.heat > 70 and not getattr(p, 'ghost_mode', False):
                     self._pressed[k_boost] = True

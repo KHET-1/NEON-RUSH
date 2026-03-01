@@ -34,16 +34,25 @@ class Ramp(pygame.sprite.Sprite):
 
 class Barrier(pygame.sprite.Sprite):
     """Static barrier obstacle in a lane."""
-    def __init__(self, x, lane_y, lane_h=55):
+    def __init__(self, x, lane_y, lane_h=55, tier=1):
         super().__init__()
         w = random.choice([30, 40, 50])
         h = lane_h - 10
         self.image = pygame.Surface((w, h), pygame.SRCALPHA)
-        pygame.draw.rect(self.image, (200, 60, 40), (0, 0, w, h))
-        pygame.draw.rect(self.image, NEON_MAGENTA, (0, 0, w, h), 2)
-        # Hazard stripes
-        for sy in range(0, h, 8):
-            pygame.draw.line(self.image, (255, 200, 0), (0, sy), (w, sy + 4), 1)
+        if tier >= 2:
+            # V2+: Neon cyan diagonal stripes instead of yellow
+            pygame.draw.rect(self.image, (180, 50, 50), (0, 0, w, h))
+            for sy in range(-h, h + w, 6):
+                pygame.draw.line(self.image, NEON_CYAN, (0, sy), (w, sy + w), 2)
+            pygame.draw.rect(self.image, NEON_CYAN, (0, 0, w, h), 2)
+            # Corner glow dots
+            for gx, gy in [(2, 2), (w - 3, 2), (2, h - 3), (w - 3, h - 3)]:
+                pygame.draw.circle(self.image, (200, 255, 255, 180), (gx, gy), 2)
+        else:
+            pygame.draw.rect(self.image, (200, 60, 40), (0, 0, w, h))
+            pygame.draw.rect(self.image, NEON_MAGENTA, (0, 0, w, h), 2)
+            for sy in range(0, h, 8):
+                pygame.draw.line(self.image, (255, 200, 0), (0, sy), (w, sy + 4), 1)
         self.rect = self.image.get_rect(midleft=(x, lane_y + lane_h // 2))
 
     def update(self, scroll_speed):
@@ -146,13 +155,14 @@ class ExcitebikePowerUp(pygame.sprite.Sprite):
 class ExcitebikePlayer(pygame.sprite.Sprite):
     """Side-scrolling bike player for Excitebike mode."""
 
-    def __init__(self, particles, player_num=1, lane=1, solo=False, diff="normal"):
+    def __init__(self, particles, player_num=1, lane=1, solo=False, diff="normal", tier=1):
         super().__init__()
         self.player_num = player_num
         self.particles = particles
         self.is_ai = False
         self._ai_keys = {}
         self.score_mult = 1
+        self.tier = tier
 
         if player_num == 1:
             self.color_main = (0, 180, 200)
@@ -187,7 +197,7 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
             "boost": self.key_boost, "fire": self.key_fire,
         }
 
-        self.image = self._make_bike()
+        self.image = self._make_bike_v2() if tier >= 2 else self._make_bike()
         self.lane = lane  # 0, 1, 2
         self.target_lane = lane
         self.lane_transition = 0.0
@@ -199,7 +209,7 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
         self.rect = self.image.get_rect(
             center=(150, self.lane_ys[self.lane] + self.lane_h // 2))
 
-        self.speed = 3.0
+        self.speed = 4.0
         self.heat = 0.0
         self.ghost_mode = False
         self.ghost_timer = 0
@@ -246,6 +256,31 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
         pygame.draw.rect(surf, (150, 80, 30), (2, 10, 6, 4))
         return surf
 
+    def _make_bike_v2(self):
+        """V2+ bike with underglow, detail shading, exhaust glow."""
+        surf = pygame.Surface((48, 28), pygame.SRCALPHA)
+        # Underglow
+        pygame.draw.ellipse(surf, (*self.color_accent, 35), (4, 16, 40, 12))
+        # Wheels (larger, with rim highlight)
+        for wx, wy in [(10, 20), (38, 20)]:
+            pygame.draw.circle(surf, (50, 50, 50), (wx, wy), 7)
+            pygame.draw.circle(surf, (90, 90, 90), (wx, wy), 5)
+            pygame.draw.circle(surf, (120, 120, 120), (wx, wy), 3)
+        # Body with shading
+        pygame.draw.rect(surf, self.color_main, (8, 6, 32, 12))
+        # Darker side stripe
+        side_dark = tuple(max(0, c - 40) for c in self.color_main)
+        pygame.draw.rect(surf, side_dark, (8, 14, 32, 4))
+        # Windshield with glint
+        pygame.draw.polygon(surf, (*self.color_accent, 180), [(36, 4), (44, 8), (36, 12)])
+        pygame.draw.line(surf, (255, 255, 255), (37, 5), (42, 7), 1)
+        # Rider
+        pygame.draw.circle(surf, (200, 180, 160), (22, 3), 5)
+        # Exhaust glow
+        pygame.draw.ellipse(surf, (255, 120, 40, 100), (0, 10, 10, 6))
+        pygame.draw.ellipse(surf, (255, 200, 100, 60), (2, 11, 6, 4))
+        return surf
+
     def _any_key(self, keys, key_list):
         if self.is_ai:
             for name, grp in self._key_groups.items():
@@ -254,9 +289,12 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
             return False
         return any(keys[k] for k in key_list)
 
-    def try_fire_heat_bolt(self, keys):
+    def try_fire_heat_bolt(self, keys, auto_fire=False):
         if not self.alive or self.fire_cooldown > 0:
             return False, 0, 0
+        if auto_fire:
+            self.fire_cooldown = 12
+            return True, self.rect.right, self.rect.centery
         if self._any_key(keys, self.key_fire) and self.heat >= 40:
             self.heat -= 40
             self.fire_cooldown = 30
@@ -291,14 +329,14 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
 
         # Accel/brake
         if self._any_key(keys, self.key_accel):
-            self.speed = min(self.speed + 0.3, 12)
+            self.speed = min(self.speed + 0.4, 16)
             self.heat += 1.0
         if self._any_key(keys, self.key_brake):
-            self.speed = max(self.speed - 0.5, 1)
+            self.speed = max(self.speed - 0.65, 1.3)
 
         # Boost
         if self._any_key(keys, self.key_boost) and self.heat > 50:
-            self.speed += 4
+            self.speed += 5
             self.heat = 0
             from core.sound import SFX
             SFX["boost"].play()
@@ -314,7 +352,7 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
                 self.ghost_mode = False
 
         self.heat = max(0, self.heat - 0.3)
-        self.speed = max(self.speed - 0.05, 1)
+        self.speed = max(self.speed - 0.07, 1.3)
         self.distance += self.speed * 0.01
         self.score += int(self.speed * 0.5 * self.score_mult)
 
@@ -357,7 +395,7 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
                 self.phase = False
         if self.surge_timer > 0:
             self.surge_timer -= 1
-            self.speed = max(self.speed, 15)
+            self.speed = max(self.speed, 20)
             if self.surge_timer <= 0:
                 self.surge = False
 
@@ -395,7 +433,7 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
             from core.sound import SFX
             SFX["life_lost"].play()
             shake.trigger(8, 20)
-            self.speed = max(1, self.speed - 3)
+            self.speed = max(1.3, self.speed - 4)
         return True
 
     def launch(self, power=-12):

@@ -67,12 +67,14 @@ class TransitionEffect:
             self._draw_zoom_rotate(screen, t)
         elif self.style == 'scanline':
             self._draw_scanline(screen, t)
+        elif self.style == 'evolution':
+            self._draw_evolution(screen, t)
         else:
             self._draw_glitch(screen, t)
 
         # Draw particles
         for p in self.particles:
-            alpha = int(255 * (p['life'] / 40))
+            alpha = min(255, int(255 * (p['life'] / 40)))
             s = pygame.Surface((p['size'] * 2, p['size'] * 2), pygame.SRCALPHA)
             pygame.draw.circle(s, (*p['color'][:3], alpha), (p['size'], p['size']), p['size'])
             screen.blit(s, (int(p['x']), int(p['y'])))
@@ -200,3 +202,119 @@ class TransitionEffect:
             s = pygame.Surface((bw, bh), pygame.SRCALPHA)
             s.fill((*c[:3], random.randint(30, 100)))
             screen.blit(s, (bx, by))
+
+    def _draw_evolution(self, screen, t):
+        """Evolution flash: V1→V2 transition. 4 phases over 180 frames.
+
+        Phase 1 (0-0.25): Glitch deterioration — horizontal slice displacement + gray overlay
+        Phase 2 (0.25-0.50): White-out — screen flashes white, hex text falls
+        Phase 3 (0.50-0.67): Color explosion — expanding rainbow ring, V2 bg fades in
+        Phase 4 (0.67-1.0): Title card — "EVOLUTION V2" with heavy glow + particle shower
+        """
+        cx, cy = SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
+
+        if t < 0.25:
+            # Phase 1: Glitch deterioration
+            phase_t = t / 0.25
+            screen.blit(self.from_surface, (0, 0))
+            # Increasing horizontal slice displacement
+            strip_h = 6
+            for y in range(0, SCREEN_HEIGHT, strip_h):
+                if random.random() < phase_t * 0.6:
+                    offset = random.randint(-int(80 * phase_t), int(80 * phase_t))
+                    h = min(strip_h, SCREEN_HEIGHT - y)
+                    if h > 0:
+                        strip = self.from_surface.subsurface((0, y, SCREEN_WIDTH, h))
+                        screen.blit(strip, (offset, y))
+            # Gray desaturation overlay
+            gray_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            gray_overlay.fill((128, 128, 128, int(100 * phase_t)))
+            screen.blit(gray_overlay, (0, 0))
+
+        elif t < 0.50:
+            # Phase 2: White-out with cascading hex text
+            phase_t = (t - 0.25) / 0.25
+            # Flash intensity
+            flash_alpha = int(255 * min(1.0, phase_t * 2))
+            screen.fill(BLACK)
+            white_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            white_surf.fill((255, 255, 255, flash_alpha))
+            screen.blit(white_surf, (0, 0))
+            # Cascading hex/binary text
+            hex_font = load_font("dejavusans", 10)
+            num_cols = 20
+            for col in range(num_cols):
+                x = col * (SCREEN_WIDTH // num_cols)
+                # Each column drops at different speed
+                drop_y = int((phase_t * 3 + col * 0.1) * SCREEN_HEIGHT) % SCREEN_HEIGHT
+                for row in range(5):
+                    hy = drop_y + row * 14
+                    if 0 <= hy < SCREEN_HEIGHT:
+                        hex_text = f"{random.randint(0, 255):02X}"
+                        h_color = random.choice([NEON_CYAN, NEON_MAGENTA, (0, 255, 100)])
+                        h_surf = hex_font.render(hex_text, True, h_color)
+                        h_surf.set_alpha(int(200 * (1 - row / 5)))
+                        screen.blit(h_surf, (x, hy))
+
+        elif t < 0.67:
+            # Phase 3: Color explosion — expanding rainbow ring
+            phase_t = (t - 0.50) / 0.17
+            screen.fill(BLACK)
+            # Expanding ring
+            ring_r = int(phase_t * max(SCREEN_WIDTH, SCREEN_HEIGHT))
+            ring_colors = [(255, 0, 0), (255, 165, 0), (255, 255, 0),
+                           (0, 255, 0), (0, 150, 255), (150, 0, 255)]
+            for i, rc in enumerate(ring_colors):
+                r = max(1, ring_r - i * 15)
+                ring_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                a = int(120 * (1 - phase_t * 0.5))
+                pygame.draw.circle(ring_surf, (*rc, a), (cx, cy), r, max(1, 8 - i))
+                screen.blit(ring_surf, (0, 0))
+
+        else:
+            # Phase 4: Title card — "EVOLUTION V{tier}" with heavy neon glow
+            phase_t = (t - 0.67) / 0.33
+            screen.fill(BLACK)
+
+            # Background subtle gradient flash
+            bg_alpha = int(30 * (1 - phase_t))
+            if bg_alpha > 0:
+                bg_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                bg_surf.fill((*NEON_MAGENTA[:3], bg_alpha))
+                screen.blit(bg_surf, (0, 0))
+
+            # Title text
+            title_text = f"EVOLUTION V{self.evolution_tier}"
+            scale = 1.0 + 0.2 * math.sin(phase_t * math.pi * 2)
+            size = int(56 * scale)
+            font = load_font("freesans", size, bold=True)
+
+            # Heavy glow (multiple offsets)
+            for dx in range(-3, 4):
+                for dy in range(-3, 4):
+                    if dx == 0 and dy == 0:
+                        continue
+                    dist = abs(dx) + abs(dy)
+                    glow_alpha = max(10, int(80 / dist))
+                    glow = font.render(title_text, True, NEON_CYAN)
+                    glow.set_alpha(glow_alpha)
+                    screen.blit(glow, (cx - glow.get_width() // 2 + dx,
+                                       cy - glow.get_height() // 2 + dy))
+
+            # Main text
+            alpha = int(255 * min(1.0, phase_t * 3))
+            txt = font.render(title_text, True, SOLAR_WHITE)
+            txt.set_alpha(alpha)
+            screen.blit(txt, (cx - txt.get_width() // 2, cy - txt.get_height() // 2))
+
+            # Particle shower from top
+            if random.random() < 0.4:
+                self.particles.append({
+                    'x': random.randint(0, SCREEN_WIDTH),
+                    'y': -5,
+                    'vx': random.uniform(-1, 1),
+                    'vy': random.uniform(3, 7),
+                    'life': 60,
+                    'color': random.choice([NEON_CYAN, NEON_MAGENTA, SOLAR_YELLOW, SOLAR_WHITE]),
+                    'size': random.randint(2, 4),
+                })

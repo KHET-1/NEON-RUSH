@@ -29,6 +29,7 @@ class ExcitebikeBg:
         self.scroll_x = 0.0
         self.mountain_scroll = 0.0
         self.tier = tier
+        self._tick = 0
         # Pre-generate mountain silhouettes
         self.mountains_far = self._gen_mountains(20, 80, 150, seed=42)
         self.mountains_near = self._gen_mountains(15, 100, 200, seed=99)
@@ -37,6 +38,46 @@ class ExcitebikeBg:
         if tier >= 2:
             self.mountains_deep = self._gen_mountains(25, 40, 90, seed=7)
             self._grass_tufts = self._gen_grass_tufts()
+
+            from core.vfx import (
+                make_multi_gradient, make_dither_overlay,
+                TWILIGHT_PALETTE, AmbientParticles, VFXState,
+            )
+            self._twilight = TWILIGHT_PALETTE
+
+            # Pre-rendered sky gradient (replaces 310 per-scanline draw.line calls)
+            self._sky_gradient = make_multi_gradient(SCREEN_WIDTH, self.GROUND_Y, [
+                (0.0, (10, 8, 30)),       # deep twilight
+                (0.30, (20, 12, 45)),     # dark purple
+                (0.55, (30, 15, 55)),     # mid purple
+                (0.75, (80, 35, 80)),     # pink transition
+                (0.90, (120, 60, 100)),   # warm horizon
+                (1.0, (160, 80, 70)),     # sunset glow
+            ])
+            self._sky_dither = make_dither_overlay(SCREEN_WIDTH, self.GROUND_Y, strength=15)
+
+            # Pre-generated cloud surfaces
+            self._clouds_far = self._gen_clouds(8, (25, 15, 45, 80), seed=10)
+            self._clouds_near = self._gen_clouds(6, (50, 30, 70, 60), seed=20)
+
+            # Pre-rendered tree silhouettes
+            self._trees = self._gen_trees()
+
+            # Flower dot positions (seeded)
+            self._flowers = self._gen_flowers()
+
+            # Pre-rendered lane tile with dither texture
+            self._lane_tile = self._make_lane_tile()
+
+            # Pre-rendered headlight cone
+            self._headlight_surf = self._make_headlight()
+
+            # Atmospheric dust motes
+            self._dust = AmbientParticles(60)
+            self._dust_timer = 0
+
+            # VFX post-processing
+            self._vfx = VFXState(enable_scanlines=True)
 
     def _gen_mountains(self, num_peaks, min_h, max_h, seed=0):
         rng = random.Random(seed)
@@ -62,6 +103,82 @@ class ExcitebikeBg:
             ))
         return tufts
 
+    def _gen_clouds(self, count, color, seed=0):
+        """Pre-generate cloud surfaces at init (3-5 ellipses per cloud)."""
+        rng = random.Random(seed)
+        clouds = []
+        for _ in range(count):
+            w = rng.randint(80, 200)
+            h = rng.randint(25, 50)
+            surf = pygame.Surface((w, h), pygame.SRCALPHA)
+            # 3-5 overlapping ellipses
+            num_blobs = rng.randint(3, 5)
+            for _ in range(num_blobs):
+                bx = rng.randint(0, w - 30)
+                by = rng.randint(0, h - 15)
+                bw = rng.randint(30, min(w - bx, 80))
+                bh = rng.randint(12, min(h - by, 30))
+                pygame.draw.ellipse(surf, color, (bx, by, bw, bh))
+            x_pos = rng.randint(0, SCREEN_WIDTH)
+            y_pos = rng.randint(30, self.GROUND_Y - 80)
+            clouds.append((surf, x_pos, y_pos))
+        return clouds
+
+    def _gen_trees(self):
+        """Pre-render 6 tree silhouette surfaces."""
+        rng = random.Random(66)
+        trees = []
+        for _ in range(6):
+            w, h = 20, 30
+            surf = pygame.Surface((w, h), pygame.SRCALPHA)
+            tree_color = rng.choice([(30, 60, 25), (25, 50, 20), (35, 70, 30)])
+            # Trunk
+            pygame.draw.rect(surf, (40, 30, 20), (8, 18, 4, 12))
+            # Canopy (triangle or circle)
+            if rng.random() < 0.5:
+                pygame.draw.polygon(surf, tree_color, [(10, 2), (2, 20), (18, 20)])
+            else:
+                pygame.draw.circle(surf, tree_color, (10, 12), 9)
+            x_offset = rng.randint(0, SCREEN_WIDTH)
+            trees.append((surf, x_offset))
+        return trees
+
+    def _gen_flowers(self):
+        """Pre-generate flower positions for terrain decoration."""
+        rng = random.Random(77)
+        flowers = []
+        for _ in range(30):
+            flowers.append((
+                rng.randint(0, SCREEN_WIDTH),
+                rng.randint(-5, 3),
+                rng.choice([(220, 60, 60), (220, 180, 40), (180, 60, 200), (255, 255, 100)]),
+            ))
+        return flowers
+
+    def _make_lane_tile(self):
+        """Pre-render 800x55 lane tile with subtle dither texture."""
+        from core.vfx import make_dither_overlay
+        tile = pygame.Surface((SCREEN_WIDTH, self.LANE_HEIGHT))
+        tile.fill(ROAD_DARK)
+        dither = make_dither_overlay(SCREEN_WIDTH, self.LANE_HEIGHT, strength=10)
+        tile.blit(dither, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        return tile
+
+    def _make_headlight(self):
+        """Pre-render headlight cone (120x200 gradient, SRCALPHA)."""
+        w, h = 120, 200
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        cx = w // 2
+        # Cone from bottom center expanding upward-right
+        for y in range(h):
+            t = y / h  # 0=top (far), 1=bottom (player)
+            spread = int(cx * (1 - t * 0.7))
+            alpha = int(35 * (1 - t))
+            if spread > 0 and alpha > 0:
+                pygame.draw.line(surf, (255, 240, 200, alpha),
+                                 (cx - spread, y), (cx + spread, y))
+        return surf
+
     def get_hill_y(self, x):
         """Get ground height at position x (for physics)."""
         # Sine-sum terrain
@@ -78,70 +195,168 @@ class ExcitebikeBg:
             return self.LANE_Y[lane_idx]
         return self.LANE_Y[1]
 
+    def _draw_snow_caps(self, screen):
+        """Draw white snow lines along top 15% of far mountain peaks."""
+        offset = int(self.mountain_scroll * 0.4) % (SCREEN_WIDTH * 3)
+        for px, ph, pw in self.mountains_far:
+            sx = px - offset
+            if sx + pw < -100 or sx > SCREEN_WIDTH + 100:
+                continue
+            peak_y = 180 - ph
+            cap_h = int(ph * 0.15)
+            # Snow highlight along peak ridge
+            p1 = (sx + pw // 3, peak_y)
+            p2 = (sx + pw * 2 // 3, int(peak_y + ph * 0.3))
+            pygame.draw.line(screen, (200, 200, 220, 120), p1, p2, 2)
+
+    def _draw_v2_terrain_detail(self, screen):
+        """V2+ grass tufts, flowers, and tree silhouettes."""
+        tuft_offset = int(self.scroll_x * 0.6) % SCREEN_WIDTH
+        # Grass tufts (arcs)
+        for tx, ty_off, th, tc in self._grass_tufts:
+            sx = (tx - tuft_offset) % SCREEN_WIDTH
+            base_y = self.get_hill_y(sx)
+            tip_y = int(base_y) + ty_off - th
+            # Curved grass blade via arc
+            rect = pygame.Rect(sx - 4, tip_y, 8, int(base_y) + ty_off - tip_y)
+            if rect.height > 2 and rect.width > 2:
+                pygame.draw.arc(screen, tc, rect, 0, math.pi, 2)
+
+        # Flower dots
+        if hasattr(self, '_flowers'):
+            for fx, fy_off, fc in self._flowers:
+                sx = (fx - tuft_offset) % SCREEN_WIDTH
+                base_y = self.get_hill_y(sx)
+                pygame.draw.circle(screen, fc, (sx, int(base_y) + fy_off), 2)
+
+        # Tree silhouettes
+        if hasattr(self, '_trees'):
+            tree_offset = int(self.scroll_x * 0.4) % SCREEN_WIDTH
+            for surf, tx in self._trees:
+                sx = (tx - tree_offset) % SCREEN_WIDTH
+                base_y = self.get_hill_y(sx)
+                screen.blit(surf, (sx - 10, int(base_y) - 28))
+
+    def _draw_v2_lane_features(self, screen):
+        """V2+ lane textures, neon border glow, and headlight cone."""
+        pulse = math.sin(self.scroll_x * 0.015)
+
+        # Neon glow on each lane boundary (expanded)
+        for i in range(len(self.LANE_Y) + 1):
+            if i == 0:
+                ly = self.LANE_Y[0]
+                color = NEON_CYAN
+            elif i == len(self.LANE_Y):
+                ly = self.LANE_Y[-1] + self.LANE_HEIGHT
+                color = NEON_MAGENTA
+            else:
+                ly = self.LANE_Y[i]
+                color = NEON_CYAN if i % 2 == 0 else NEON_MAGENTA
+
+            glow_w = int(2 + 2 * (0.5 + 0.5 * pulse))
+            glow_a = int(60 + 40 * (0.5 + 0.5 * pulse))
+            glow_surf = pygame.Surface((SCREEN_WIDTH, max(1, glow_w)), pygame.SRCALPHA)
+            glow_surf.fill((*color[:3], glow_a))
+            screen.blit(glow_surf, (0, ly - glow_w // 2))
+
+        # Headlight cone at player position (fixed at x=150)
+        if hasattr(self, '_headlight_surf'):
+            screen.blit(self._headlight_surf, (90, self.LANE_Y[0] - 120),
+                         special_flags=pygame.BLEND_RGB_ADD)
+
     def update_and_draw(self, speed, screen):
         self.scroll_x += speed
         self.mountain_scroll += speed * 0.3
+        self._tick += 1
 
         # Sky gradient
-        for y in range(self.GROUND_Y):
-            t = y / self.GROUND_Y
-            r = int(SKY_TOP[0] + (SKY_BOTTOM[0] - SKY_TOP[0]) * t)
-            g = int(SKY_TOP[1] + (SKY_BOTTOM[1] - SKY_TOP[1]) * t)
-            b = int(SKY_TOP[2] + (SKY_BOTTOM[2] - SKY_TOP[2]) * t)
-            pygame.draw.line(screen, (r, g, b), (0, y), (SCREEN_WIDTH, y))
+        if self.tier >= 2 and hasattr(self, '_sky_gradient'):
+            screen.blit(self._sky_gradient, (0, 0))
+            screen.blit(self._sky_dither, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+        else:
+            for y in range(self.GROUND_Y):
+                t = y / self.GROUND_Y
+                r = int(SKY_TOP[0] + (SKY_BOTTOM[0] - SKY_TOP[0]) * t)
+                g = int(SKY_TOP[1] + (SKY_BOTTOM[1] - SKY_TOP[1]) * t)
+                b = int(SKY_TOP[2] + (SKY_BOTTOM[2] - SKY_TOP[2]) * t)
+                pygame.draw.line(screen, (r, g, b), (0, y), (SCREEN_WIDTH, y))
 
-        # V2+: Deep mountain layer (slowest parallax)
+        # V2+: Far cloud layer
+        if self.tier >= 2 and hasattr(self, '_clouds_far'):
+            cloud_offset_far = int(self.mountain_scroll * 0.1) % SCREEN_WIDTH
+            for surf, cx, cy in self._clouds_far:
+                bx = (cx - cloud_offset_far) % (SCREEN_WIDTH + surf.get_width()) - surf.get_width()
+                screen.blit(surf, (bx, cy))
+
+        # V2+: Deep mountain layer
         if self.tier >= 2:
             MOUNTAIN_DEEP = (35, 22, 50)
             self._draw_mountains(screen, self.mountains_deep, MOUNTAIN_DEEP,
                                  self.mountain_scroll * 0.2, 220)
 
-        # Far mountains (parallax 0.2x)
+        # Far mountains
         self._draw_mountains(screen, self.mountains_far, MOUNTAIN_FAR,
                              self.mountain_scroll * 0.4, 180)
 
-        # Near mountains (parallax 0.5x)
+        # V2+: Atmospheric fog band
+        if self.tier >= 2:
+            fog_alpha = int(20 + 10 * math.sin(self._tick * 0.01))
+            fog = pygame.Surface((SCREEN_WIDTH, 30), pygame.SRCALPHA)
+            fog.fill((60, 40, 80, fog_alpha))
+            screen.blit(fog, (0, 165))
+
+        # Near mountains
         self._draw_mountains(screen, self.mountains_near, MOUNTAIN_NEAR,
                              self.mountain_scroll * 0.8, self.GROUND_Y - 20)
 
+        # V2+: Snow caps
+        if self.tier >= 2:
+            self._draw_snow_caps(screen)
+
+        # V2+: Near cloud layer
+        if self.tier >= 2 and hasattr(self, '_clouds_near'):
+            cloud_offset_near = int(self.mountain_scroll * 0.3) % SCREEN_WIDTH
+            for surf, cx, cy in self._clouds_near:
+                bx = (cx - cloud_offset_near) % (SCREEN_WIDTH + surf.get_width()) - surf.get_width()
+                screen.blit(surf, (bx, min(cy, self.GROUND_Y - 60)))
+
         # Ground
-        pygame.draw.rect(screen, GROUND_COLOR, (0, self.GROUND_Y, SCREEN_WIDTH, SCREEN_HEIGHT - self.GROUND_Y))
+        pygame.draw.rect(screen, GROUND_COLOR,
+                         (0, self.GROUND_Y, SCREEN_WIDTH, SCREEN_HEIGHT - self.GROUND_Y))
 
         # Draw terrain hills
         self._draw_terrain(screen)
 
-        # V2+: Grass tufts along terrain line
+        # V2+: Terrain decoration
         if self.tier >= 2:
-            tuft_offset = int(self.scroll_x * 0.6) % SCREEN_WIDTH
-            for tx, ty_off, th, tc in self._grass_tufts:
-                sx = (tx - tuft_offset) % SCREEN_WIDTH
-                base_y = self.get_hill_y(sx)
-                tip_y = int(base_y) + ty_off - th
-                pygame.draw.polygon(screen, tc, [
-                    (sx - 3, int(base_y) + ty_off),
-                    (sx, tip_y),
-                    (sx + 3, int(base_y) + ty_off),
-                ])
+            self._draw_v2_terrain_detail(screen)
 
         # Draw lanes
         self._draw_lanes(screen)
 
-        # V2+: Pulsing neon glow on lane borders
+        # V2+: Enhanced lane features
         if self.tier >= 2:
-            pulse = math.sin(self.scroll_x * 0.015)
-            # Top border: NEON_CYAN glow, width expands 2→6px
-            top_w = int(3 + 3 * (0.5 + 0.5 * pulse))
-            top_alpha = int(80 + 60 * (0.5 + 0.5 * pulse))
-            top_glow = pygame.Surface((SCREEN_WIDTH, top_w), pygame.SRCALPHA)
-            top_glow.fill((*NEON_CYAN[:3], top_alpha))
-            screen.blit(top_glow, (0, self.LANE_Y[0] - top_w))
-            # Bottom border: NEON_MAGENTA glow
-            bot_w = int(3 + 3 * (0.5 - 0.5 * pulse))
-            bot_alpha = int(80 + 60 * (0.5 - 0.5 * pulse))
-            bot_glow = pygame.Surface((SCREEN_WIDTH, bot_w), pygame.SRCALPHA)
-            bot_glow.fill((*NEON_MAGENTA[:3], bot_alpha))
-            bot_y = self.LANE_Y[-1] + self.LANE_HEIGHT + 2
-            screen.blit(bot_glow, (0, bot_y))
+            self._draw_v2_lane_features(screen)
+
+        # V2+: Atmospheric dust motes
+        if self.tier >= 2 and hasattr(self, '_dust'):
+            self._dust_timer += 1
+            if self._dust_timer >= 6:
+                self._dust_timer = 0
+                for _ in range(2):
+                    x = random.randint(0, SCREEN_WIDTH)
+                    y = random.randint(self.LANE_Y[0] - 40, self.LANE_Y[-1] + self.LANE_HEIGHT)
+                    color = random.choice([(200, 200, 220), (180, 180, 200), (220, 210, 190)])
+                    vx = random.uniform(-0.5, -0.2)
+                    vy = random.uniform(-0.3, 0.3)
+                    self._dust.spawn(x, y, vx, vy, random.randint(80, 160), color, size=1)
+            self._dust.update()
+            self._dust.draw(screen)
+
+        # V2+ post-processing
+        if self.tier >= 2 and hasattr(self, '_vfx'):
+            self._vfx.update()
+            self._vfx.draw_post(screen)
 
     def _draw_mountains(self, screen, peaks, color, scroll, base_y):
         offset = int(scroll) % (SCREEN_WIDTH * 3)
@@ -156,6 +371,17 @@ class ExcitebikeBg:
                 (sx + pw, base_y),
             ]
             pygame.draw.polygon(screen, color, points)
+
+            # V2+: Mountain gradient highlight (lighter ridge)
+            if self.tier >= 2:
+                highlight = tuple(min(255, c + 20) for c in color)
+                ridge_pts = [
+                    (sx + pw // 3, base_y - ph),
+                    (sx + pw * 2 // 3, base_y - ph * 0.7),
+                    (sx + pw // 2, base_y - ph * 0.5),
+                ]
+                if len(ridge_pts) >= 3:
+                    pygame.draw.polygon(screen, highlight, ridge_pts)
 
     def _draw_terrain(self, screen):
         """Draw sine-wave terrain along the ground line."""
@@ -176,9 +402,24 @@ class ExcitebikeBg:
     def _draw_lanes(self, screen):
         """Draw 3 racing lanes."""
         for i, ly in enumerate(self.LANE_Y):
-            # Lane background
-            color = ROAD_DARK if i % 2 == 0 else ROAD_LIGHT
-            pygame.draw.rect(screen, color, (0, ly, SCREEN_WIDTH, self.LANE_HEIGHT))
+            # V2+: Use pre-rendered lane tile with dither texture
+            if self.tier >= 2 and hasattr(self, '_lane_tile'):
+                # Alternate dark/light by tinting
+                if i % 2 == 0:
+                    screen.blit(self._lane_tile, (0, ly))
+                else:
+                    # Lighter variant — just draw light color then overlay dither
+                    pygame.draw.rect(screen, ROAD_LIGHT,
+                                     (0, ly, SCREEN_WIDTH, self.LANE_HEIGHT))
+                    from core.vfx import make_dither_overlay
+                    # Use cached tile approach: blit with offset
+                    screen.blit(self._lane_tile, (0, ly),
+                                special_flags=pygame.BLEND_RGB_ADD)
+            else:
+                # V1: flat color
+                color = ROAD_DARK if i % 2 == 0 else ROAD_LIGHT
+                pygame.draw.rect(screen, color,
+                                 (0, ly, SCREEN_WIDTH, self.LANE_HEIGHT))
 
             # Lane borders
             pygame.draw.line(screen, LANE_LINE, (0, ly), (SCREEN_WIDTH, ly), 1)
