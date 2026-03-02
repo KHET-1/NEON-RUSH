@@ -23,11 +23,8 @@ from core.constants import (
     DIFF_EASY, DIFF_NORMAL, DIFF_HARD, DIFFICULTY_SETTINGS,
     MODE_DESERT, MODE_EXCITEBIKE, MODE_MICROMACHINES, MODE_NAMES,
     ROAD_LEFT, ROAD_RIGHT,
+    ANTI_CAMP_RADIUS, ANTI_CAMP_TIME, SIM_MAX_CATCHUP,
 )
-
-# Anti-camping: nudge players who sit still too long
-CAMP_RADIUS = 15    # pixels — movement less than this counts as "stationary"
-CAMP_TIME = 5.0     # seconds before nudge triggers
 
 
 def _parse_args():
@@ -41,6 +38,10 @@ def _parse_args():
                         help="God mode — players can't die")
     parser.add_argument('--boss-rush', action='store_true',
                         help="Boss spawns in ~5 seconds (QA mode)")
+    parser.add_argument('--windowed', action='store_true',
+                        help="Start in windowed mode instead of fullscreen")
+    parser.add_argument('--ai', action='store_true',
+                        help="Auto-start with AI player (no menu)")
     return parser.parse_args()
 
 
@@ -49,6 +50,9 @@ def _apply_cli_flags(mode):
     if getattr(_cli_args, 'god', False):
         mode.GOD_MODE = True
     if getattr(_cli_args, 'boss_rush', False):
+        # Mark for task system to auto-complete tasks
+        mode._boss_rush = True
+        # Keep old thresholds as fallback if task system isn't active
         mode.BOSS_DISTANCE_THRESHOLD = 0.01
         mode.BOSS_SCORE_THRESHOLD = 0
         mode.BOSS_TIME_THRESHOLD = 0
@@ -121,7 +125,7 @@ def main():
 
     # Fixed timestep accumulator
     accumulator = 0.0
-    MAX_CATCHUP = 8  # cap sim steps per render to prevent spiral of death
+    MAX_CATCHUP = SIM_MAX_CATCHUP
 
     # Mode system
     shared_state = None
@@ -271,6 +275,12 @@ def main():
         current_mode = MODE_CLASSES[mode_idx](particles, shake, shared_state)
         _apply_cli_flags(current_mode)
 
+    # --ai: auto-start with AI player, skip menu
+    if getattr(_cli_args, 'ai', False):
+        ai_config = {"ai_players": [0], "score_mult": 1}
+        start_game(1, ai_config)
+        state = STATE_PLAY
+
     running = True
     while running:
         # === Phase 0: Timing ===
@@ -398,9 +408,9 @@ def main():
                         if pid in camp_anchors:
                             ax, ay, start = camp_anchors[pid]
                             dist_sq = (cx - ax) ** 2 + (cy - ay) ** 2
-                            if dist_sq > CAMP_RADIUS ** 2:
+                            if dist_sq > ANTI_CAMP_RADIUS ** 2:
                                 camp_anchors[pid] = (cx, cy, now_camp)
-                            elif now_camp - start > CAMP_TIME:
+                            elif now_camp - start > ANTI_CAMP_TIME:
                                 # Camping detected — fake damage nudge
                                 shake.trigger(6, 15)
                                 p.invincible_timer = max(

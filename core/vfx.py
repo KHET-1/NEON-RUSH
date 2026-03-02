@@ -42,6 +42,45 @@ CYBER_PALETTE = {  # Micro Machines V2 "Neon Grid"
     'road_surface': (25, 22, 35),
 }
 
+# ---------------------------------------------------------------------------
+# V3 Palettes
+# ---------------------------------------------------------------------------
+
+CRIMSON_PALETTE = {  # Desert V3 "Crimson Sandstorm"
+    'sky_top': (25, 2, 2),
+    'sky_mid': (80, 8, 8),
+    'sky_horizon': (180, 30, 10),
+    'storm_wall': (120, 20, 10),
+    'lightning': (255, 220, 180),
+    'ember': (255, 80, 20),
+    'road_a': (60, 30, 10),
+    'road_b': (75, 40, 15),
+    'mesa_tint': (140, 40, 20),
+    'crack': (90, 45, 15),
+}
+
+NEONRAIN_PALETTE = {  # Excitebike V3 "Midnight Neon Rain"
+    'sky_top': (2, 2, 6),
+    'sky_mid': (4, 4, 12),
+    'sky_bottom': (8, 6, 18),
+    'rain': (160, 180, 255),
+    'billboard_cyan': (0, 255, 220),
+    'billboard_magenta': (255, 0, 180),
+    'puddle': (40, 60, 120),
+    'fog': (10, 10, 25),
+    'wet_lane': (30, 35, 50),
+}
+
+HOLO_PALETTE = {  # Micro Machines V3 "Holographic Wireframe"
+    'void': (2, 3, 8),
+    'grid_bright': (0, 255, 180),
+    'grid_dim': (0, 120, 90),
+    'data_wave': (0, 200, 255),
+    'road_base': (2, 3, 8),
+    'intersection': (0, 255, 220),
+    'edge_glow': (0, 255, 200),
+}
+
 
 # ---------------------------------------------------------------------------
 # Color Utilities
@@ -170,6 +209,59 @@ def make_scanline_overlay(w, h, spacing=3, alpha=18):
     return surf
 
 
+def make_vignette_overlay(w, h, strength=0.45):
+    """Pre-bake radial darkening vignette (init-time only).
+
+    strength: 0.0 = no darkening, 1.0 = corners fully black.
+    """
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    cx, cy = w / 2.0, h / 2.0
+    max_dist = math.sqrt(cx * cx + cy * cy)
+    # Build with concentric rectangles for speed (not per-pixel)
+    steps = 24
+    for i in range(steps):
+        t = i / steps
+        inset_x = int(cx * (1 - t))
+        inset_y = int(cy * (1 - t))
+        if inset_x <= 0 or inset_y <= 0:
+            continue
+        a = int(255 * strength * (t ** 1.8))
+        a = min(255, max(0, a))
+        rect = pygame.Rect(w - inset_x, h - inset_y, inset_x * 2 - w, inset_y * 2 - h)
+        # Draw frame ring at this inset
+        pygame.draw.rect(surf, (0, 0, 0, a),
+                         (w // 2 - inset_x, h // 2 - inset_y, inset_x * 2, inset_y * 2),
+                         max(1, int(max_dist / steps)))
+    return surf
+
+
+def make_tone_overlay(w, h, color, alpha=18):
+    """Pre-bake a uniform color tone overlay (SRCALPHA)."""
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    surf.fill((*color[:3], alpha))
+    return surf
+
+
+_glow_rect_cache = {}
+
+
+def draw_glow_rect(surface, rect, color, glow_width=4, alpha=80):
+    """Draw a glowing rectangle border, cached by dimensions."""
+    key = (rect.w, rect.h, color[:3], glow_width, alpha)
+    if key not in _glow_rect_cache:
+        w, h = rect.w + glow_width * 2, rect.h + glow_width * 2
+        gsurf = pygame.Surface((w, h), pygame.SRCALPHA)
+        for i in range(glow_width, 0, -1):
+            a = int(alpha * (1 - (i - 1) / glow_width))
+            pygame.draw.rect(gsurf, (*color[:3], a),
+                             (glow_width - i, glow_width - i,
+                              rect.w + i * 2, rect.h + i * 2), 2)
+        _glow_rect_cache[key] = gsurf
+    surface.blit(_glow_rect_cache[key],
+                 (rect.x - glow_width, rect.y - glow_width),
+                 special_flags=pygame.BLEND_RGB_ADD)
+
+
 # ---------------------------------------------------------------------------
 # AmbientParticles — lightweight array-based atmospheric particles
 # ---------------------------------------------------------------------------
@@ -206,21 +298,16 @@ class AmbientParticles:
         self.particles = alive
 
     def draw(self, surface):
+        # Direct draw — no Surface allocations per particle
+        draw_circle = pygame.draw.circle
         for p in self.particles:
             alpha_ratio = p[4] / p[5]  # life / max_life
-            a = int(255 * alpha_ratio)
-            color = (p[6], p[7], p[8], a)
-            size = p[9]
+            # Fade brightness instead of alpha (avoids SRCALPHA surfaces)
+            f = max(0.1, alpha_ratio)
+            color = (int(p[6] * f), int(p[7] * f), int(p[8] * f))
             ix, iy = int(p[0]), int(p[1])
-            if size <= 1:
-                # Single pixel — use small surface
-                s = pygame.Surface((2, 2), pygame.SRCALPHA)
-                s.fill(color)
-                surface.blit(s, (ix, iy))
-            else:
-                s = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
-                pygame.draw.circle(s, color, (size, size), size)
-                surface.blit(s, (ix - size, iy - size))
+            size = p[9]
+            draw_circle(surface, color, (ix, iy), max(1, size))
 
     def clear(self):
         self.particles.clear()
@@ -241,13 +328,28 @@ class VFXState:
         vfx.draw_post(screen)
     """
 
-    def __init__(self, enable_scanlines=True):
+    def __init__(self, enable_scanlines=True, tier=1, tone_color=None):
         self.ambient = AmbientParticles(120)
         self._scanline_overlay = None
         self._enable_scanlines = enable_scanlines
         self.flash_alpha = 0
         self.flash_color = (255, 255, 255)
         self._flash_surf = None
+        self.tier = tier
+
+        # V3 post-processing surfaces (pre-baked at init)
+        self._vignette = None
+        self._tone_overlay = None
+        self._v3_scanline_offset = 0
+
+        if tier >= 3:
+            self._vignette = make_vignette_overlay(SCREEN_WIDTH, SCREEN_HEIGHT, strength=0.45)
+            if tone_color:
+                self._tone_overlay = make_tone_overlay(
+                    SCREEN_WIDTH, SCREEN_HEIGHT, tone_color, alpha=15)
+            # Animated scanlines: denser, with scroll offset
+            self._v3_scanlines = make_scanline_overlay(
+                SCREEN_WIDTH, SCREEN_HEIGHT + 6, spacing=2, alpha=22)
 
     def trigger_flash(self, color=(255, 255, 255), alpha=120):
         """Trigger a brief screen flash (fades over ~15 frames)."""
@@ -258,6 +360,8 @@ class VFXState:
         self.ambient.update()
         if self.flash_alpha > 0:
             self.flash_alpha = max(0, self.flash_alpha - 8)
+        if self.tier >= 3:
+            self._v3_scanline_offset = (self._v3_scanline_offset + 1) % 6
 
     def draw_post(self, screen):
         """Draw post-processing effects (ambient particles, scanlines, flash)."""
@@ -272,8 +376,18 @@ class VFXState:
             self._flash_surf.fill((*self.flash_color[:3], self.flash_alpha))
             screen.blit(self._flash_surf, (0, 0))
 
-        # CRT scanlines (last)
-        if self._enable_scanlines:
+        if self.tier >= 3:
+            # V3: color tone overlay
+            if self._tone_overlay:
+                screen.blit(self._tone_overlay, (0, 0))
+            # V3: vignette (multiplicative darkening)
+            if self._vignette:
+                screen.blit(self._vignette, (0, 0))
+            # V3: animated scrolling scanlines
+            if hasattr(self, '_v3_scanlines'):
+                screen.blit(self._v3_scanlines, (0, -self._v3_scanline_offset))
+        elif self._enable_scanlines:
+            # V2: static CRT scanlines
             if self._scanline_overlay is None:
                 self._scanline_overlay = make_scanline_overlay(
                     SCREEN_WIDTH, SCREEN_HEIGHT, spacing=3, alpha=18)

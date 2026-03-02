@@ -63,7 +63,12 @@ class MicroPlayer(pygame.sprite.Sprite):
         self.heat = 0.0
         self.drift_angle = 0.0
 
-        self.base_surf = self._make_car_v2() if tier >= 2 else self._make_car()
+        if tier >= 3:
+            self.base_surf = self._make_car_v3()
+        elif tier >= 2:
+            self.base_surf = self._make_car_v2()
+        else:
+            self.base_surf = self._make_car()
         self.image = self.base_surf.copy()
         self.rect = self.image.get_rect(center=(int(self.px), int(self.py)))
 
@@ -84,6 +89,14 @@ class MicroPlayer(pygame.sprite.Sprite):
         self.phase_timer = 0
         self.surge = False
         self.surge_timer = 0
+        self.multishot = False
+        self.multishot_timer = 0
+        self.rockets = False
+        self.rockets_timer = 0
+        self.rocket_fire_cd = 0
+        self.orbit8 = False
+        self.orbit8_timer = 0
+        self._orbit8_spawn_pending = False
         self.ghost_mode = False
         self.ghost_timer = 0
         self.name = f"P{player_num}"
@@ -132,6 +145,45 @@ class MicroPlayer(pygame.sprite.Sprite):
             pygame.draw.rect(surf, (70, 70, 70), (wx, 22, 3, 2))
         return surf
 
+    def _make_car_v3(self):
+        """V3 car: 3-tone body, holographic windshield, neon wheel rims, power stripe."""
+        surf = pygame.Surface((28, 36), pygame.SRCALPHA)
+        # 3-layer underglow
+        for ew, eh, a in [(24, 28, 20), (20, 24, 35), (16, 20, 50)]:
+            pygame.draw.ellipse(surf, (*self.color_accent, a),
+                                (14 - ew // 2, 8, ew, eh))
+        # Body — 3-tone shading
+        dark = tuple(max(0, c - 50) for c in self.color_main)
+        light = tuple(min(255, c + 30) for c in self.color_main)
+        pygame.draw.rect(surf, self.color_main, (5, 2, 18, 32), border_radius=4)
+        # Left dark panel
+        pygame.draw.rect(surf, dark, (5, 2, 4, 32), border_radius=2)
+        # Right dark panel
+        pygame.draw.rect(surf, dark, (19, 2, 4, 32), border_radius=2)
+        # Center highlight
+        pygame.draw.rect(surf, light, (12, 4, 4, 28))
+        # Holographic cyan windshield with scan line
+        pygame.draw.rect(surf, (0, 220, 200, 180), (7, 3, 14, 12), border_radius=2)
+        # Moving scan line effect (static for sprite — baked mid-position)
+        pygame.draw.line(surf, (0, 255, 255), (8, 8), (20, 8), 1)
+        pygame.draw.line(surf, (255, 255, 255), (8, 4), (18, 4), 1)
+        # Neon wheel rims
+        for wx in [2, 23]:
+            pygame.draw.rect(surf, (30, 30, 35), (wx, 6, 3, 8))
+            pygame.draw.rect(surf, (30, 30, 35), (wx, 24, 3, 8))
+            # Neon rim lines
+            pygame.draw.rect(surf, self.color_accent, (wx, 6, 3, 1))
+            pygame.draw.rect(surf, self.color_accent, (wx, 13, 3, 1))
+            pygame.draw.rect(surf, self.color_accent, (wx, 24, 3, 1))
+            pygame.draw.rect(surf, self.color_accent, (wx, 31, 3, 1))
+        # Central power stripe
+        pygame.draw.line(surf, self.color_accent, (14, 4), (14, 30), 1)
+        # Rear exhaust (3-layer)
+        pygame.draw.rect(surf, (255, 100, 30, 140), (7, 30, 14, 4))
+        pygame.draw.rect(surf, (255, 180, 80, 100), (9, 31, 10, 2))
+        pygame.draw.rect(surf, (255, 220, 140, 60), (11, 31, 6, 1))
+        return surf
+
     def _any_key(self, keys, key_list):
         if self.is_ai:
             for name, grp in self._key_groups.items():
@@ -149,8 +201,8 @@ class MicroPlayer(pygame.sprite.Sprite):
         if self._any_key(keys, self.key_fire) and self.heat >= 40:
             self.heat -= 40
             self.fire_cooldown = 30
-            from core.sound import SFX
-            SFX["heat_bolt"].play()
+            from core.sound import play_sfx
+            play_sfx("heat_bolt")
             return True, self.rect.centerx, self.rect.centery
         return False, 0, 0
 
@@ -186,8 +238,8 @@ class MicroPlayer(pygame.sprite.Sprite):
         if self._any_key(keys, self.key_boost) and self.heat > 50:
             self.speed += 4
             self.heat = 0
-            from core.sound import SFX
-            SFX["boost"].play()
+            from core.sound import play_sfx
+            play_sfx("boost")
 
         # Ghost mode
         if self.heat > 100:
@@ -242,6 +294,21 @@ class MicroPlayer(pygame.sprite.Sprite):
             self.speed = max(self.speed, 10)
             if self.surge_timer <= 0:
                 self.surge = False
+        if self.multishot_timer > 0:
+            self.multishot_timer -= 1
+            if self.multishot_timer <= 0:
+                self.multishot = False
+        if self.rockets_timer > 0:
+            self.rockets_timer -= 1
+            if self.rocket_fire_cd > 0:
+                self.rocket_fire_cd -= 1
+            if self.rockets_timer <= 0:
+                self.rockets = False
+        if self.orbit8_timer > 0:
+            self.orbit8_timer -= 1
+            if self.orbit8_timer <= 0:
+                self.orbit8 = False
+                self._orbit8_spawn_pending = False
 
         # Tire smoke when drifting
         if turning and self.speed > 3:
@@ -274,8 +341,8 @@ class MicroPlayer(pygame.sprite.Sprite):
             self.shield = False
             self.shield_timer = 0
             self.invincible_timer = 30
-            from core.sound import SFX
-            SFX["shield_hit"].play()
+            from core.sound import play_sfx
+            play_sfx("shield_hit")
             shake.trigger(4, 10)
             return False
 
@@ -285,12 +352,12 @@ class MicroPlayer(pygame.sprite.Sprite):
 
         if self.lives <= 0:
             self.alive = False
-            from core.sound import SFX
-            SFX["life_lost"].play()
+            from core.sound import play_sfx
+            play_sfx("life_lost")
             shake.trigger(12, 30)
         else:
-            from core.sound import SFX
-            SFX["life_lost"].play()
+            from core.sound import play_sfx
+            play_sfx("life_lost")
             shake.trigger(8, 20)
         return True
 
@@ -299,20 +366,47 @@ class OilSlickHazard(pygame.sprite.Sprite):
     """Oil slick on track that spins the player."""
     def __init__(self, x, y, tier=1):
         super().__init__()
-        w, h = random.randint(30, 50), random.randint(20, 35)
-        self.image = pygame.Surface((w, h), pygame.SRCALPHA)
-        if tier >= 2:
+        self.w, self.h = random.randint(30, 50), random.randint(20, 35)
+        self.tier = tier
+        self._shimmer_tick = 0
+        self.image = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+        if tier >= 3:
+            self._draw_v3_shimmer()
+        elif tier >= 2:
             # V2+: Rainbow iridescence — 3 overlapping ellipses with shifted hues
-            pygame.draw.ellipse(self.image, (20, 20, 30, 140), (0, 0, w, h))
-            pygame.draw.ellipse(self.image, (60, 20, 80, 70), (2, 2, w - 4, h - 4))
-            pygame.draw.ellipse(self.image, (20, 60, 60, 50), (6, 4, w - 12, h - 8))
-            pygame.draw.ellipse(self.image, (80, 40, 120, 40), (8, 6, w - 16, h - 12))
+            pygame.draw.ellipse(self.image, (20, 20, 30, 140), (0, 0, self.w, self.h))
+            pygame.draw.ellipse(self.image, (60, 20, 80, 70), (2, 2, self.w - 4, self.h - 4))
+            pygame.draw.ellipse(self.image, (20, 60, 60, 50), (6, 4, self.w - 12, self.h - 8))
+            pygame.draw.ellipse(self.image, (80, 40, 120, 40), (8, 6, self.w - 16, self.h - 12))
         else:
-            pygame.draw.ellipse(self.image, (20, 20, 30, 160), (0, 0, w, h))
-            pygame.draw.ellipse(self.image, (40, 30, 50, 100), (4, 4, w - 8, h - 8))
+            pygame.draw.ellipse(self.image, (20, 20, 30, 160), (0, 0, self.w, self.h))
+            pygame.draw.ellipse(self.image, (40, 30, 50, 100), (4, 4, self.w - 8, self.h - 8))
         self.rect = self.image.get_rect(center=(x, y))
 
+    def _draw_v3_shimmer(self):
+        """V3: animated hue-shifted iridescent ellipses."""
+        w, h = self.w, self.h
+        self.image.fill((0, 0, 0, 0))
+        t = self._shimmer_tick * 0.15
+        # Hue-shifting ellipses
+        for i in range(4):
+            inset = i * 3
+            hue_shift = t + i * 1.2
+            r = int(127 + 80 * math.sin(hue_shift))
+            g = int(80 + 60 * math.sin(hue_shift + 2.1))
+            b = int(100 + 80 * math.sin(hue_shift + 4.2))
+            a = max(30, 120 - i * 25)
+            pygame.draw.ellipse(self.image, (r, g, b, a),
+                                (inset, inset, w - inset * 2, h - inset * 2))
+        # Bright center highlight
+        pygame.draw.ellipse(self.image, (200, 200, 255, 40),
+                            (w // 3, h // 3, w // 3, h // 3))
+
     def update(self, scroll_speed):
+        self._shimmer_tick += 1
+        # V3: redraw shimmer every 8 frames
+        if self.tier >= 3 and self._shimmer_tick % 8 == 0:
+            self._draw_v3_shimmer()
         self.rect.y += scroll_speed
         if self.rect.top > SCREEN_HEIGHT + 50:
             self.kill()
@@ -378,11 +472,12 @@ class MicroCoin(pygame.sprite.Sprite):
 
 
 class MicroPowerUp(pygame.sprite.Sprite):
-    def __init__(self, x, y, kind=None):
+    def __init__(self, x, y, kind=None, tier=1):
         super().__init__()
         self.kind = kind or random.choice(POWERUP_ALL)
         self.color = POWERUP_COLORS[self.kind]
         self.pulse = random.randint(0, 60)
+        self.tier = tier
         self.image = pygame.Surface((24, 24), pygame.SRCALPHA)
         self._draw()
         self.rect = self.image.get_rect(center=(x, y))
@@ -390,15 +485,52 @@ class MicroPowerUp(pygame.sprite.Sprite):
     def _draw(self):
         self.image.fill((0, 0, 0, 0))
         p = 0.65 + 0.35 * math.sin(self.pulse * 0.1)
-        pygame.draw.circle(self.image, (*self.color, int(60 * p)), (12, 12), 11)
-        pygame.draw.circle(self.image, self.color, (12, 12), 8, 2)
-        pygame.draw.circle(self.image, (*self.color, 180), (12, 12), 6)
+        cx, cy = 12, 12
+        # Rainbow shimmer ring
+        rainbow_t = self.pulse * 0.03
+        rh = int(127 + 127 * math.sin(rainbow_t))
+        rg = int(127 + 127 * math.sin(rainbow_t + 2.09))
+        rb = int(127 + 127 * math.sin(rainbow_t + 4.19))
+        pygame.draw.circle(self.image, (rh, rg, rb, int(25 * p)), (cx, cy), 11)
+        # Core glow
+        pygame.draw.circle(self.image, (*self.color, int(65 * p)), (cx, cy), 9)
+        pygame.draw.circle(self.image, self.color, (cx, cy), 8, 2)
+        pygame.draw.circle(self.image, (*self.color, 190), (cx, cy), 6)
+        # 4 sparkle rays
+        for i in range(4):
+            a = self.pulse * 0.12 + i * math.pi / 2
+            x1 = cx + int(math.cos(a) * 6)
+            y1 = cy + int(math.sin(a) * 6)
+            x2 = cx + int(math.cos(a) * 10)
+            y2 = cy + int(math.sin(a) * 10)
+            pygame.draw.line(self.image, (*self.color, int(80 * p)), (x1, y1), (x2, y2), 1)
+        # Bright center
+        pygame.draw.circle(self.image, (255, 255, 255, int(50 * p)), (cx, cy), 2)
         import core.fonts as _fonts
         label = _fonts.FONT_POWERUP.render(POWERUP_LABELS[self.kind], True, WHITE)
-        self.image.blit(label, (12 - label.get_width() // 2, 12 - label.get_height() // 2))
+        self.image.blit(label, (cx - label.get_width() // 2, cy - label.get_height() // 2))
 
-    def update(self, scroll_speed):
+    def update(self, scroll_speed, players=None):
         self.pulse += 1
+        # Tiers 1-2: auto-attract toward nearest player
+        if self.tier <= 2 and players:
+            best_dist = 999999
+            best_p = None
+            for p in players:
+                if not p.alive:
+                    continue
+                dx = p.rect.centerx - self.rect.centerx
+                dy = p.rect.centery - self.rect.centery
+                dist = math.sqrt(dx * dx + dy * dy)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_p = p
+            if best_p and best_dist < 250:
+                dx = best_p.rect.centerx - self.rect.centerx
+                dy = best_p.rect.centery - self.rect.centery
+                dist = max(1, best_dist)
+                self.rect.x += int(dx / dist * 4)
+                self.rect.y += int(dy / dist * 4)
         self._draw()
         self.rect.y += scroll_speed
         if self.rect.top > SCREEN_HEIGHT + 30:

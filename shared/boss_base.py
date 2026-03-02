@@ -3,7 +3,7 @@ import random
 import math
 
 from core.constants import SCREEN_WIDTH, SCREEN_HEIGHT, NEON_MAGENTA, SOLAR_YELLOW, SOLAR_WHITE, NEON_CYAN
-from core.sound import SFX
+from core.sound import play_sfx
 from core.fonts import load_font
 
 
@@ -27,6 +27,10 @@ class AttackPattern:
     def start(self, boss):
         self.timer = 0
         self.active = True
+
+    def play_start_sfx(self):
+        """Override to play SFX when attack begins."""
+        pass
 
     def update(self, boss, players, particles, dt=1):
         self.timer += 1
@@ -112,8 +116,9 @@ class Boss(pygame.sprite.Sprite):
     ENVIRONMENTAL_DAMAGE = 50
     INVULN_AFTER_HIT = 30  # frames
 
-    def __init__(self, x, y, particles):
+    def __init__(self, x, y, particles, tier=1):
         super().__init__()
+        self.tier = tier
         self.max_hp = self.MAX_HP
         self.hp = self.max_hp
         self.particles = particles
@@ -135,6 +140,7 @@ class Boss(pygame.sprite.Sprite):
 
         self.warning_timer = 180  # 3 second warning before active
         self.active = False
+        play_sfx("boss_enter")
 
         self.image = self._create_surface()
         self.rect = self.image.get_rect(center=(x, y))
@@ -169,6 +175,11 @@ class Boss(pygame.sprite.Sprite):
         particles.burst(self.rect.centerx, self.rect.centery,
                         [SOLAR_YELLOW, SOLAR_WHITE, NEON_MAGENTA], 40, 8, 80, 5)
 
+    def get_attack_hazards(self):
+        """Return list of (type, data) tuples for active attack hitboxes.
+        Override in subclass. Default: no hazards."""
+        return []
+
     @property
     def hp_ratio(self):
         return self.hp / self.max_hp
@@ -184,7 +195,7 @@ class Boss(pygame.sprite.Sprite):
 
         self.hp -= amount
         self.invuln_timer = self.INVULN_AFTER_HIT
-        SFX["boss_hit"].play()
+        play_sfx("boss_hit")
 
         # Phase transition check
         self._check_phase_transition()
@@ -194,7 +205,7 @@ class Boss(pygame.sprite.Sprite):
             self.alive = False
             self.defeated = True
             self.death_timer = self.DEATH_ANIM_FRAMES
-            SFX["boss_defeat"].play()
+            play_sfx("boss_defeat")
             self._on_death(self.particles)
             return True
 
@@ -211,6 +222,7 @@ class Boss(pygame.sprite.Sprite):
                     self.current_attack = None
                     self.vulnerable = False
                     self._on_phase_change(i)
+                    play_sfx("boss_phase_drop")
                     break
 
     def update(self, players, scroll_speed=0):
@@ -226,6 +238,8 @@ class Boss(pygame.sprite.Sprite):
 
         # Death animation
         if self.defeated:
+            if self.death_timer == self.DEATH_ANIM_FRAMES - 1:
+                play_sfx("boss_death_rumble")
             self.death_timer -= 1
             if self.death_timer <= 0:
                 self.kill()
@@ -259,10 +273,12 @@ class Boss(pygame.sprite.Sprite):
                 # Pick next attack
                 self.current_attack = self.current_phase.select_attack()
                 self.current_attack.start(self)
+                self.current_attack.play_start_sfx()
         else:
             # No attack active, not vulnerable — start next attack
             self.current_attack = self.current_phase.select_attack()
             self.current_attack.start(self)
+            self.current_attack.play_start_sfx()
 
         # Movement
         self._update_movement(players)

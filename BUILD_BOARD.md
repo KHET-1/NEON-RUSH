@@ -48,6 +48,7 @@
 *Format: `[~] Name | Started YYYY-MM-DD HH:MM | Task description`*
 
 - [~] Specter (Swarm: solo) | Started 2026-02-27 22:00 | Balance pass — Desert Velocity mode (all 3 difficulties, spawn rates, boss HP)
+- [~] Architect | Started 2026-03-01 | Boss Rush Redesign — V3 visuals (13 files need `if tier >= 3:` branches) — PLANNED ONLY, not implemented
 
 ---
 
@@ -76,6 +77,12 @@
 - [x] Architect (Swarm: founding) | 2026-02-27 | FONT_POWERUP crash fix (module-level import capture)
   - Reviewer: Rathin (human) | Validated 2026-02-27 (confirmed PowerUp renders)
 - [x] Specter (Swarm: solo) | 2026-02-27 | Doctrine audit of parallel-01 boss/bg files — added missing get_attack_hazards(), removed 3x except:pass violations (Rule 7.6), 600-frame headless validation
+  - Reviewer: Rathin (human) | Pending
+- [x] Architect | 2026-03-01 | Boss Rush Redesign — task system, level grid, GAME_DESIGN.md, balance_metrics.py
+  - Created: core/tasks.py (~430 lines), tools/balance_metrics.py, GAME_DESIGN.md
+  - Edited: core/constants.py, shared/game_mode.py, all 3 modes, neon_rush.py, shared/boss_base.py
+  - Fixed: MicroMachinesBoss crash, road disconnect, excitebike ramp damage, coin_combo, milestones
+  - Added: --windowed, --ai CLI flags, display.py RESIZABLE windowed mode
   - Reviewer: Rathin (human) | Pending
 
 ---
@@ -213,6 +220,11 @@ Reviewers get listed in COMPLETE/DIAMOND entries AND in the Credits table in `AI
 ### Ideas
 
 *(Drop yours below. Newest at the top.)*
+
+- [idea] Architect | 2026-03-01 | **V3 Visuals** — 13 files need `if tier >= 3:` branches. Desert V3: crimson sandstorm, lightning. Excitebike V3: night mode, neon signs, rain. Micro V3: holographic grid, glitch effects. See plan in `~/.claude/plans/kind-sparking-bumblebee.md` §7.
+- [idea] Architect | 2026-03-01 | **"Micro Machines backwards" report** — user said steering feels backwards. Top-down mode uses heading-based rotation where up on stick = forward relative to car heading, not screen-up. May need a "relative vs absolute steering" option or just make it screen-relative for accessibility.
+- [idea] Architect | 2026-03-01 | **--windowed still fullscreen bug** — user reported --windowed didn't work. Code verified correct via headless test. Possible causes: stale __pycache__ (cleared), or user ran without the flag. Added print confirmations + RESIZABLE flag. Needs live verification.
+- [idea] Architect | 2026-03-01 | **tools/balance_metrics.py** — created but not run yet. Needs `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python3 tools/balance_metrics.py` to baseline current pacing.
 
 ### Chef's Kiss Hall
 

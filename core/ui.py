@@ -10,90 +10,11 @@ from core.constants import (
 from core.fonts import load_font
 from core.hud import draw_panel
 from core.highscores import load_highscores, save_highscores
-from core.sound import SFX
+import core.sound as _snd
+from core.sound import play_sfx
 
-
-class ComboTracker:
-    def __init__(self):
-        self.count = 0
-        self.timer = 0
-        self.multiplier = 1
-        self.display_timer = 0
-
-    def hit(self):
-        self.count += 1
-        self.timer = 90
-        if self.count >= 10:
-            self.multiplier = 4
-        elif self.count >= 5:
-            self.multiplier = 3
-        elif self.count >= 3:
-            self.multiplier = 2
-        else:
-            self.multiplier = 1
-        if self.multiplier > 1:
-            self.display_timer = 90
-
-    def update(self):
-        if self.timer > 0:
-            self.timer -= 1
-            if self.timer <= 0:
-                self.count = 0
-                self.multiplier = 1
-        if self.display_timer > 0:
-            self.display_timer -= 1
-
-    def get_bonus(self, base_score):
-        return base_score * self.multiplier
-
-    def draw(self, surface, x, y):
-        if self.display_timer > 0 and self.multiplier > 1:
-            alpha = min(255, self.display_timer * 6)
-            scale = 1.0 + 0.3 * math.sin(self.display_timer * 0.2)
-            size = int(28 * scale)
-            font = load_font("dejavusans", size, bold=True)
-            colors = {2: SOLAR_YELLOW, 3: DESERT_ORANGE, 4: NEON_MAGENTA}
-            color = colors.get(self.multiplier, SOLAR_YELLOW)
-            txt = font.render(f"COMBO x{self.multiplier}!", True, color)
-            txt.set_alpha(alpha)
-            surface.blit(txt, (x - txt.get_width() // 2, y))
-
-
-class MilestoneTracker:
-    def __init__(self):
-        self.last_km = 0
-        self.display_text = ""
-        self.display_timer = 0
-        self.display_color = SOLAR_YELLOW
-
-    def check(self, distance):
-        km = int(distance)
-        if km > self.last_km and km > 0:
-            self.last_km = km
-            if km % 5 == 0:
-                self.display_text = f"{km} KM! INCREDIBLE!"
-                self.display_color = NEON_MAGENTA
-                self.display_timer = 120
-            else:
-                self.display_text = f"{km} KM!"
-                self.display_color = SOLAR_YELLOW
-                self.display_timer = 80
-            SFX["select"].play()
-
-    def update(self):
-        if self.display_timer > 0:
-            self.display_timer -= 1
-
-    def draw(self, surface):
-        if self.display_timer > 0:
-            progress = self.display_timer / 80
-            size = int(36 + 12 * max(0, progress - 0.7) * 3.3)
-            font = load_font("dejavusans", size, bold=True)
-            txt = font.render(self.display_text, True, self.display_color)
-            alpha = min(255, self.display_timer * 5)
-            txt.set_alpha(alpha)
-            y = SCREEN_HEIGHT // 2 - 60
-            surface.blit(txt, (SCREEN_WIDTH // 2 - txt.get_width() // 2, y))
+# Backward-compatible re-exports (moved to core.combo)
+from core.combo import ComboTracker, MilestoneTracker
 
 
 class HighScoreEntry:
@@ -113,14 +34,14 @@ class HighScoreEntry:
                 self.name = self.name[:-1]
             elif len(self.name) < 3 and event.unicode.isalnum():
                 self.name += event.unicode.upper()
-                SFX["select"].play()
+                play_sfx("select")
 
     def _commit(self):
         scores = load_highscores()
         scores.append({"name": self.name, "score": self.score})
         scores.sort(key=lambda s: s["score"], reverse=True)
         save_highscores(scores[:5])
-        SFX["highscore"].play()
+        play_sfx("highscore")
         self.done = True
 
     def draw(self, screen, tick):
@@ -132,10 +53,10 @@ class HighScoreEntry:
             self._auto_frame += 1
             if self._auto_frame == 30 and len(self.name) < 1:
                 self.name += "A"
-                SFX["select"].play()
+                play_sfx("select")
             elif self._auto_frame == 60 and len(self.name) < 2:
                 self.name += "I"
-                SFX["select"].play()
+                play_sfx("select")
             elif self._auto_frame == 90 and len(self.name) >= 2:
                 self._commit()
 
@@ -212,9 +133,8 @@ MENU_ROW_MODES = 0
 MENU_ROW_DIFF = 1
 MENU_ROW_AI_REWARD = 2
 MENU_ROW_RENDER = 3
-MENU_ROW_EVOLUTION = 4
-MENU_ROW_LOGGING = 5
-MENU_NUM_ROWS = 6
+MENU_ROW_TOGGLES = 4       # Sound / Evolution / Logging side-by-side
+MENU_NUM_ROWS = 5
 
 # Items per row (for LEFT/RIGHT bounds)
 _MENU_COLS = {
@@ -222,18 +142,16 @@ _MENU_COLS = {
     MENU_ROW_DIFF: 3,        # EASY, NORMAL, HARD
     MENU_ROW_AI_REWARD: 4,   # off, x2, x4, x8
     MENU_ROW_RENDER: 1,      # single cycler
-    MENU_ROW_EVOLUTION: 1,   # toggle
-    MENU_ROW_LOGGING: 1,     # toggle
+    MENU_ROW_TOGGLES: 3,     # Sound, Evolution, Logging
 }
 
 # Y positions of each row (for cursor drawing)
 _ROW_Y = {
-    MENU_ROW_MODES: 225,
-    MENU_ROW_DIFF: 268,
-    MENU_ROW_AI_REWARD: 308,
-    MENU_ROW_RENDER: 330,
-    MENU_ROW_EVOLUTION: 348,
-    MENU_ROW_LOGGING: 366,
+    MENU_ROW_MODES: 220,
+    MENU_ROW_DIFF: 258,
+    MENU_ROW_AI_REWARD: 296,
+    MENU_ROW_RENDER: 328,
+    MENU_ROW_TOGGLES: 358,
 }
 
 
@@ -255,16 +173,57 @@ def _draw_row_cursor(screen, y, tick):
     screen.blit(surf, (chev_x, chev_y))
 
 
+def _draw_neon_title(screen, text, font, cx, y, tick, scale=1.0):
+    """Procedural neon text: magenta bloom → cyan inner → white core + pulse."""
+    pulse = 0.6 + 0.4 * math.sin(tick * 0.05)
+    # Cycle hue between cyan and magenta
+    mg_a = int(160 * pulse)
+    cy_a = int(180 * (1.0 - pulse * 0.4))
+
+    # Layer 1: magenta bloom (8 directions, 4px offset)
+    bloom = font.render(text, True, NEON_MAGENTA)
+    bloom.set_alpha(mg_a)
+    bx = cx - bloom.get_width() // 2
+    for dx, dy in [(-4, -4), (4, -4), (-4, 4), (4, 4),
+                   (-4, 0), (4, 0), (0, -4), (0, 4)]:
+        screen.blit(bloom, (bx + dx, y + dy))
+
+    # Layer 2: cyan inner glow (4 directions, 2px offset)
+    inner = font.render(text, True, NEON_CYAN)
+    inner.set_alpha(cy_a)
+    for dx, dy in [(-2, -2), (2, -2), (-2, 2), (2, 2)]:
+        screen.blit(inner, (bx + dx, y + dy))
+
+    # Layer 3: white core
+    core = font.render(text, True, (255, 255, 255))
+    screen.blit(core, (bx, y))
+
+    # Neon underline pulsing cyan↔magenta
+    tw = font.size(text)[0]
+    ul_y = y + font.get_height() + 2
+    line_color = (
+        int(NEON_CYAN[0] * (1 - pulse) + NEON_MAGENTA[0] * pulse),
+        int(NEON_CYAN[1] * (1 - pulse) + NEON_MAGENTA[1] * pulse),
+        int(NEON_CYAN[2] * (1 - pulse) + NEON_MAGENTA[2] * pulse),
+    )
+    pygame.draw.line(screen, line_color,
+                     (cx - tw // 2, ul_y), (cx + tw // 2, ul_y), 2)
+    # Glow echo
+    glow_line = pygame.Surface((tw, 4), pygame.SRCALPHA)
+    glow_line.fill((*line_color, int(50 * pulse)))
+    screen.blit(glow_line, (cx - tw // 2, ul_y - 1))
+
+
 def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
                loop_count=0, ai_frames=0, target_fps=144, dashboard=None,
                evolution_mgr=None, vsync=True, logging_enabled=False,
-               menu_row=0, menu_col=0):
-    from core.fonts import FONT_TITLE, FONT_SUBTITLE, FONT_HUD, FONT_HUD_SM, FONT_HUD_SM_BOLD
+               sound_enabled=True, menu_row=0, menu_col=0):
+    from core.fonts import FONT_TITLE, FONT_NEON_TITLE, FONT_SUBTITLE, FONT_HUD, FONT_HUD_SM, FONT_HUD_SM_BOLD
 
     t = (tick % 180) / 180
-    r = int(18 + 12 * math.sin(t * math.pi * 2))
-    g = int(8 + 6 * math.sin(t * math.pi * 2 + 0.5))
-    b = int(35 + 22 * math.sin(t * math.pi * 2 + 1))
+    r = int(10 + 8 * math.sin(t * math.pi * 2))
+    g = int(4 + 4 * math.sin(t * math.pi * 2 + 0.5))
+    b = int(22 + 16 * math.sin(t * math.pi * 2 + 1))
     screen.fill((r, g, b))
 
     pygame.draw.rect(screen, (28, 28, 38), (ROAD_LEFT, 0, ROAD_WIDTH, SCREEN_HEIGHT))
@@ -276,17 +235,15 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
 
     cx = SCREEN_WIDTH // 2
 
-    # Title
-    title_text = "NEON RUSH"
-    for dx, dy in [(-2, -2), (2, -2), (-2, 2), (2, 2)]:
-        glow = FONT_TITLE.render(title_text, True, NEON_MAGENTA)
-        screen.blit(glow, (cx - glow.get_width() // 2 + dx, 80 + dy))
-    title = FONT_TITLE.render(title_text, True, NEON_CYAN)
-    screen.blit(title, (cx - title.get_width() // 2, 80))
+    # Neon title with procedural glow
+    neon_font = FONT_NEON_TITLE or FONT_TITLE
+    _draw_neon_title(screen, "NEON RUSH", neon_font, cx, 72, tick)
 
-    # Subtitle
+    # Subtitle with subtle neon treatment
+    sub_pulse = 0.7 + 0.3 * math.sin(tick * 0.04 + 1.0)
     sub = FONT_SUBTITLE.render("DESERT VELOCITY", True, SOLAR_YELLOW)
-    screen.blit(sub, (cx - sub.get_width() // 2, 155))
+    sub.set_alpha(int(200 + 55 * sub_pulse))
+    screen.blit(sub, (cx - sub.get_width() // 2, 160))
 
     # === Row 0: Game mode options ===
     modes_data = [
@@ -321,12 +278,12 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
                 text = ""
         if text:
             mt = font.render(text, True, color)
-            screen.blit(mt, (mx, 225))
+            screen.blit(mt, (mx, 220))
         # Advance by the base label width to keep spacing stable
         mx += FONT_HUD_SM.size(label)[0] + 12
 
     # === Row 1: Difficulty selector ===
-    diff_y = 268
+    diff_y = 258
     diff_list = [DIFF_EASY, DIFF_NORMAL, DIFF_HARD]
     is_focused = menu_row == MENU_ROW_DIFF
     diff_label = FONT_HUD_SM.render("Difficulty:", True,
@@ -351,7 +308,7 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
     screen.blit(hint, (cx - hint.get_width() // 2, diff_y + 18))
 
     # === Row 2: AI Reward multiplier ===
-    ai_y = 308
+    ai_y = 296
     is_focused = menu_row == MENU_ROW_AI_REWARD
     ai_label = FONT_HUD_SM.render("AI Reward:", True,
                                    (200, 200, 220) if is_focused else (150, 150, 170))
@@ -372,7 +329,7 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
         screen.blit(rt, (cx - 40 + i * 70, ai_y))
 
     # === Row 3: Render FPS cap + VSync indicator ===
-    fps_y = 330
+    fps_y = 328
     is_focused = menu_row == MENU_ROW_RENDER
     fps_label = FONT_HUD_SM.render("Render:", True,
                                     (200, 200, 220) if is_focused else (150, 150, 170))
@@ -385,43 +342,34 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
     fps_val_t = FONT_HUD_SM_BOLD.render(f"< {fps_display} >", True, fps_color)
     screen.blit(fps_val_t, (cx - fps_val_t.get_width() // 2, fps_y))
 
-    # === Row 4: Evolution toggle ===
-    if evolution_mgr is not None:
-        evo_y = 348
-        is_focused = menu_row == MENU_ROW_EVOLUTION
-        evo_state = "ON" if evolution_mgr.enabled else "OFF"
-        evo_color = SOLAR_YELLOW if evolution_mgr.enabled else (80, 80, 100)
-        if is_focused:
-            evo_color = SOLAR_YELLOW if evolution_mgr.enabled else (150, 150, 170)
-        evo_font = FONT_HUD_SM_BOLD if evolution_mgr.enabled or is_focused else FONT_HUD_SM
-        evo_text = f"Evolution: {evo_state}"
-        if evolution_mgr.max_tier > 1:
-            evo_text += f"  (Max: V{evolution_mgr.max_tier})"
-        et = evo_font.render(evo_text, True, evo_color)
-        # Checkstamp for evolution
-        stamp_x = cx - et.get_width() // 2 - 22
-        screen.blit(et, (stamp_x + 22, evo_y))
-        _draw_checkstamp(screen, stamp_x, evo_y + 1, evolution_mgr.enabled, tick)
-
-    # === Row 5: Logging toggle ===
-    log_y = 366
-    is_focused = menu_row == MENU_ROW_LOGGING
-    log_label_text = "Logging"
-    log_color = NEON_CYAN if logging_enabled else (80, 80, 100)
-    if is_focused:
-        log_color = NEON_CYAN if logging_enabled else (150, 150, 170)
-    log_font = FONT_HUD_SM_BOLD if logging_enabled or is_focused else FONT_HUD_SM
-    lt = log_font.render(log_label_text, True, log_color)
-    label_x = cx - lt.get_width() // 2 - 12
-    screen.blit(lt, (label_x + 22, log_y))
-    _draw_checkstamp(screen, label_x, log_y + 1, logging_enabled, tick)
+    # === Row 4: Toggles — Sound / Evolution / Logging side-by-side ===
+    tog_y = 358
+    is_focused = menu_row == MENU_ROW_TOGGLES
+    evo_enabled = evolution_mgr.enabled if evolution_mgr else False
+    toggles = [
+        ("Sound", sound_enabled, NEON_CYAN),
+        ("Evolution", evo_enabled, SOLAR_YELLOW),
+        ("Logging", logging_enabled, NEON_CYAN),
+    ]
+    col_spacing = 130
+    tog_start_x = cx - col_spacing  # center the 3 columns
+    for i, (label, checked, active_color) in enumerate(toggles):
+        tx = tog_start_x + i * col_spacing
+        is_col_sel = is_focused and menu_col == i
+        color = active_color if checked else (80, 80, 100)
+        if is_col_sel:
+            color = active_color if checked else (150, 150, 170)
+        font = FONT_HUD_SM_BOLD if checked or is_col_sel else FONT_HUD_SM
+        lt = font.render(label, True, color)
+        screen.blit(lt, (tx + 20, tog_y))
+        _draw_checkstamp(screen, tx, tog_y + 1, checked, tick)
 
     # === Row cursor indicator (pulsing chevron) ===
     row_y = _ROW_Y.get(menu_row, 225)
     _draw_row_cursor(screen, row_y, tick)
 
     # Navigation hint
-    nav_hint = FONT_HUD_SM.render("UP/DOWN = Navigate   LEFT/RIGHT = Change   ENTER = Select", True, (100, 100, 120))
+    nav_hint = FONT_HUD_SM.render("UP/DOWN = Navigate   LEFT/RIGHT = Change   ENTER = Toggle   M = Mute", True, (100, 100, 120))
     screen.blit(nav_hint, (cx - nav_hint.get_width() // 2, 388))
 
     # Controls hints (condensed)
@@ -556,3 +504,48 @@ def draw_gameover(screen, players, game_distance, tick, two_player,
         else:
             retry = FONT_HUD.render("SPACE = End    ESC = Quit", True, NEON_CYAN)
         screen.blit(retry, (SCREEN_WIDTH // 2 - retry.get_width() // 2, py + ph - 45))
+
+
+def draw_victory(screen, shared_state, tick):
+    """Victory screen with total stats."""
+    from core.fonts import FONT_TITLE, FONT_SUBTITLE, FONT_HUD, FONT_HUD_SM
+
+    t = (tick % 120) / 120
+    r = int(10 + 20 * math.sin(t * math.pi * 2))
+    g = int(5 + 15 * math.sin(t * math.pi * 2 + 1))
+    b = int(30 + 25 * math.sin(t * math.pi * 2 + 2))
+    screen.fill((r, g, b))
+
+    pw, ph = 500, 380
+    px, py = (SCREEN_WIDTH - pw) // 2, (SCREEN_HEIGHT - ph) // 2 - 20
+    draw_panel(screen, pygame.Rect(px, py, pw, ph), (0, 0, 20, 220), SOLAR_YELLOW, 3)
+
+    # Neon victory title
+    _draw_neon_title(screen, "VICTORY!", FONT_TITLE, SCREEN_WIDTH // 2, py + 10, tick)
+
+    sub = FONT_SUBTITLE.render("ALL BOSSES DEFEATED!", True, NEON_CYAN)
+    screen.blit(sub, (SCREEN_WIDTH // 2 - sub.get_width() // 2, py + 85))
+
+    if shared_state:
+        y = py + 130
+        evo_tier = getattr(shared_state, 'evolution_tier', 1)
+        cycles = getattr(shared_state, 'cycle_count', 0)
+        bosses_total = shared_state.bosses_defeated
+        stats = [
+            ("Total Score", str(shared_state.best_score)),
+            ("Total Coins", str(shared_state.total_coins)),
+            ("Distance", f"{shared_state.total_distance:.1f} km"),
+            ("Bosses", f"{bosses_total}" + (f" ({cycles} cycles)" if cycles > 0 else "/3")),
+            ("Evolution", f"V{evo_tier}" if evo_tier > 1 else "V1 (base)"),
+        ]
+        for label, value in stats:
+            lt = FONT_HUD_SM.render(f"{label}:", True, (180, 180, 200))
+            screen.blit(lt, (px + 40, y))
+            vt = FONT_HUD.render(value, True, SOLAR_WHITE)
+            screen.blit(vt, (px + 200, y - 2))
+            y += 35
+
+    blink = (tick // 25) % 2
+    if blink:
+        cont = FONT_HUD.render("SPACE = Continue    ESC = Title", True, NEON_CYAN)
+        screen.blit(cont, (SCREEN_WIDTH // 2 - cont.get_width() // 2, py + ph - 45))

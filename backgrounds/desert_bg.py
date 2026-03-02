@@ -11,10 +11,10 @@ from core.constants import (
 
 # --- V2 palette ---
 _V2_SKY = (15, 8, 25)
-_V2_MESA_COLOR = (80, 35, 20)
-_V2_MESA_DEEP = (40, 15, 35)
-_V2_MESA_RIM = (160, 60, 40)
-_V2_HORIZON_GLOW = (200, 100, 20)
+_V2_MESA_COLOR = (70, 30, 22)
+_V2_MESA_DEEP = (35, 14, 30)
+_V2_MESA_RIM = (200, 110, 50)       # warm gold rim catch
+_V2_HORIZON_GLOW = (180, 90, 40)
 
 # --- Pseudo-3D perspective constants ---
 _HORIZON_Y = int(SCREEN_HEIGHT * 0.30)
@@ -34,37 +34,37 @@ _DASH_WORLD_PERIOD = 4.0        # world units per dash cycle
 _DASH_ON_RATIO = 0.5            # center line: 50% on
 _LANE_ON_RATIO = 0.3            # lane lines: 30% on (shorter dashes)
 
-# Off-road ground — alternating 5-tier depth gradient
+# Off-road ground — alternating 5-tier depth gradient (BRIGHT, visible terrain)
 _STRIP_A = [
-    (35, 22, 30),   # far — dark purple-brown
-    (55, 35, 25),   # mid-far — dusty brown
-    (80, 52, 28),   # mid — warm sand
-    (100, 65, 32),  # mid-near — bright sand
-    (115, 75, 35),  # near — golden sand
+    (60, 35, 50),    # far — warm purple-brown
+    (90, 60, 40),    # mid-far — dusty sand
+    (130, 85, 45),   # mid — rich sand
+    (160, 110, 55),  # mid-near — bright warm sand
+    (185, 130, 60),  # near — golden sand (vivid)
 ]
 _STRIP_B = [
-    (28, 18, 24),   # far
-    (45, 28, 20),   # mid-far
-    (65, 42, 22),   # mid
-    (85, 55, 26),   # mid-near
-    (100, 65, 30),  # near
+    (45, 28, 40),    # far — darker band (clear contrast with A)
+    (70, 48, 32),    # mid-far
+    (105, 70, 38),   # mid
+    (135, 95, 48),   # mid-near
+    (160, 115, 52),  # near
 ]
 
-# Road surface perspective bands (subtle dark/light)
-_ROAD_BAND_A = (35, 35, 48)    # matches ROAD_COLOR
-_ROAD_BAND_B = (44, 44, 58)    # slightly lighter
+# Road surface perspective bands (visible grey with contrast)
+_ROAD_BAND_A = (50, 48, 65)     # cool dark asphalt
+_ROAD_BAND_B = (65, 62, 80)     # lighter band — clear scrolling motion
 
-# Shoulder perspective bands
-_SHOULDER_BAND_A = (75, 45, 18)   # matches ROAD_SHOULDER
-_SHOULDER_BAND_B = (58, 36, 14)   # darker variant
+# Shoulder perspective bands (warm brown, visible)
+_SHOULDER_BAND_A = (110, 70, 30)   # warm shoulder
+_SHOULDER_BAND_B = (85, 55, 22)    # darker shoulder
 
-# Rumble strips
-_RUMBLE_A = (200, 50, 50)
-_RUMBLE_B = (220, 220, 220)
+# Rumble strips (high contrast markers)
+_RUMBLE_A = (220, 60, 60)
+_RUMBLE_B = (240, 240, 240)
 
-# Edge / marker colors
-_EDGE_GLOW = (20, 120, 150)
-_LANE_COLOR = (65, 65, 88)
+# Edge / marker colors (brighter neon)
+_EDGE_GLOW = (30, 180, 220)
+_LANE_COLOR = (90, 90, 120)
 
 
 class Background:
@@ -99,14 +99,17 @@ class Background:
             )
             self._synth = SYNTH_PALETTE
 
-            # Pre-rendered synthwave sky gradient (replaces flat fill)
+            # Pre-rendered synthwave sky gradient (smooth 8-stop sunset)
             self._sky_gradient = make_multi_gradient(SCREEN_WIDTH, _HORIZON_Y, [
-                (0.0, (8, 4, 28)),       # deep space indigo
-                (0.25, (15, 6, 40)),      # dark purple
-                (0.50, (25, 8, 50)),      # dusky purple
-                (0.70, (80, 20, 60)),     # magenta transition
-                (0.85, (180, 50, 80)),    # warm orange-pink
-                (1.0, (220, 120, 60)),    # horizon gold
+                (0.00, (4, 2, 18)),       # deep space — near black
+                (0.15, (8, 4, 28)),       # space indigo
+                (0.30, (14, 6, 38)),      # dark purple
+                (0.45, (22, 8, 48)),      # dusky purple
+                (0.58, (40, 12, 52)),     # warm purple transition
+                (0.70, (65, 18, 55)),     # muted magenta
+                (0.82, (110, 40, 65)),    # dusty rose
+                (0.92, (150, 65, 55)),    # warm amber
+                (1.00, (180, 90, 45)),    # horizon gold (toned down)
             ])
 
             # Dither overlay for banding reduction
@@ -115,24 +118,91 @@ class Background:
             # Pre-rendered synthwave sun
             self._sun_surf = self._make_synthwave_sun()
 
+            # Warm sun glow band — wider and brighter
+            self._sun_glow_band = pygame.Surface((SCREEN_WIDTH, 50), pygame.SRCALPHA)
+            for row in range(50):
+                a = int(70 * (1 - row / 50))
+                pygame.draw.line(self._sun_glow_band, (255, 150, 60, a),
+                                 (0, row), (SCREEN_WIDTH, row))
+
             # Constellation connections and shooting star state
             self._constellations = self._gen_constellations()
             self._shooting_star = None  # active shooting star dict or None
             self._shooting_star_cooldown = 0
 
-            # Heat shimmer surfaces (pre-rendered)
+            # Heat shimmer surfaces (pre-rendered, fewer but more visible)
             self._shimmer_lines = []
-            for _ in range(20):
-                line = pygame.Surface((SCREEN_WIDTH, 1), pygame.SRCALPHA)
-                line.fill((255, 180, 80, 15))
+            for _ in range(10):
+                line = pygame.Surface((SCREEN_WIDTH, 2), pygame.SRCALPHA)
+                line.fill((255, 180, 100, 25))
                 self._shimmer_lines.append(line)
+
+            # (Edge glow now uses direct draw.line — no cached surfaces needed)
 
             # Ember particles (ambient, separate from main particle system)
             self._embers = AmbientParticles(60)
             self._ember_timer = 0
 
-            # VFX post-processing state
-            self._vfx = VFXState(enable_scanlines=True)
+            # VFX post-processing state (scanlines disabled — saves ~1ms/frame)
+            self._vfx = VFXState(enable_scanlines=False)
+
+        # --- V3 Crimson Sandstorm Upgrades ---
+        if tier >= 3:
+            from core.vfx import (
+                make_multi_gradient, CRIMSON_PALETTE, AmbientParticles, VFXState,
+            )
+            self._crimson = CRIMSON_PALETTE
+
+            # Crimson 6-stop sky gradient
+            self._v3_sky = make_multi_gradient(SCREEN_WIDTH, _HORIZON_Y, [
+                (0.00, (25, 2, 2)),
+                (0.20, (50, 5, 5)),
+                (0.40, (80, 8, 8)),
+                (0.60, (120, 15, 8)),
+                (0.80, (160, 25, 10)),
+                (1.00, (180, 30, 10)),
+            ])
+
+            # Storm wall surfaces (3 semi-transparent oscillating columns)
+            self._storm_walls = []
+            rng = random.Random(42)
+            for _ in range(3):
+                w = rng.randint(60, 120)
+                wall_surf = pygame.Surface((w, _HORIZON_Y), pygame.SRCALPHA)
+                for wy in range(_HORIZON_Y):
+                    a = rng.randint(15, 40)
+                    pygame.draw.line(wall_surf, (120, 20, 10, a), (0, wy), (w, wy))
+                self._storm_walls.append({
+                    'surf': wall_surf,
+                    'base_x': rng.randint(0, SCREEN_WIDTH),
+                    'speed': rng.uniform(0.3, 0.8),
+                    'phase': rng.uniform(0, math.pi * 2),
+                })
+
+            # Lightning state
+            self._lightning = None  # dict with points + life when active
+            self._lightning_cooldown = 0
+
+            # Aggressive embers (160 cap)
+            self._embers = AmbientParticles(160)
+            self._ember_timer = 0
+
+            # Road crack overlay tile (pre-baked)
+            self._crack_tile = self._make_crack_tile()
+
+            # Dust devil positions
+            self._dust_devils = []
+            dd_rng = random.Random(88)
+            for _ in range(3):
+                self._dust_devils.append({
+                    'x': dd_rng.randint(50, SCREEN_WIDTH - 50),
+                    'phase': dd_rng.uniform(0, math.pi * 2),
+                    'size': dd_rng.randint(15, 30),
+                })
+
+            # V3 VFX with crimson tone
+            self._vfx = VFXState(enable_scanlines=False, tier=3,
+                                 tone_color=(180, 30, 10))
 
     def _gen_stars(self):
         rng = random.Random(77)
@@ -176,32 +246,37 @@ class Background:
         return mesas
 
     def _make_synthwave_sun(self):
-        """Pre-render synthwave setting sun with glow and horizontal stripes."""
-        size = 180
+        """Pre-render synthwave setting sun — big, blazing, classic retrowave."""
+        size = 320
         surf = pygame.Surface((size, size), pygame.SRCALPHA)
         cx, cy = size // 2, size // 2
-        body_r = 55
+        body_r = 110
 
-        # Wide outer glow rings (soft warm bloom)
-        for i in range(10, 0, -1):
-            r = body_r + i * 6
-            a = max(3, 35 - i * 3)
-            pygame.draw.circle(surf, (255, 80, 120, a), (cx, cy), r)
+        # Hot outer glow — 16 rings, exponential alpha falloff
+        for i in range(16, 0, -1):
+            r = body_r + i * 10
+            a = int(130 * ((1 - i / 16) ** 1.5))
+            pygame.draw.circle(surf, (255, 100, 40, a), (cx, cy), r)
 
-        # Main sun body — gradient from warm orange edge to bright center
-        pygame.draw.circle(surf, (255, 180, 80), (cx, cy), body_r)
-        pygame.draw.circle(surf, (255, 210, 120), (cx, cy), body_r - 8)
-        pygame.draw.circle(surf, (255, 235, 160), (cx, cy), body_r - 20)
+        # Corona ring — bright edge just outside the body
+        pygame.draw.circle(surf, (255, 200, 100, 80), (cx, cy), body_r + 2, 3)
 
-        # Classic synthwave horizontal stripes through lower half
-        stripe_gaps = [8, 18, 26, 33, 39, 44]
-        for gap in stripe_gaps:
+        # Sun body — smooth warm gradient (amber edge → gold → white-hot core)
+        pygame.draw.circle(surf, (240, 100, 30), (cx, cy), body_r)
+        pygame.draw.circle(surf, (250, 160, 60), (cx, cy), body_r - 15)
+        pygame.draw.circle(surf, (255, 210, 120), (cx, cy), body_r - 35)
+        pygame.draw.circle(surf, (255, 240, 180), (cx, cy), body_r - 55)
+        pygame.draw.circle(surf, (255, 250, 220), (cx, cy), body_r - 70)
+
+        # Classic synthwave horizontal stripes (5 clean bands, wider near bottom)
+        stripe_offsets = [20, 40, 58, 72, 85]
+        for gap in stripe_offsets:
             sy = cy + gap
-            stripe_h = max(2, 4 - gap // 15)
+            stripe_h = max(2, 6 - gap // 18)
             dy = sy - cy
             if abs(dy) < body_r:
                 half_w = int(math.sqrt(body_r * body_r - dy * dy))
-                pygame.draw.rect(surf, (0, 0, 0, 180),
+                pygame.draw.rect(surf, (0, 0, 0, 150),
                                  (cx - half_w, sy, half_w * 2, stripe_h))
 
         return surf
@@ -249,7 +324,7 @@ class Background:
                 if i < len(star_positions) and j < len(star_positions):
                     p1, p2 = star_positions[i], star_positions[j]
                     if 0 <= p1[0] < SCREEN_WIDTH and 0 <= p2[0] < SCREEN_WIDTH:
-                        pygame.draw.aaline(screen, (100, 100, 160, 40), p1, p2)
+                        pygame.draw.aaline(screen, (140, 140, 200), p1, p2)
 
         # Shooting star (V2+)
         if hasattr(self, '_shooting_star'):
@@ -279,13 +354,12 @@ class Background:
             ss['y'] += ss['vy']
             ss['life'] -= 1
 
-            # Draw trail
+            # Draw trail (direct draw, no Surface allocs)
             for idx, (tx, ty) in enumerate(ss['trail']):
-                a = int(180 * (idx + 1) / len(ss['trail']) * (ss['life'] / 40))
+                brightness = int(200 * (idx + 1) / len(ss['trail']) * (ss['life'] / 40))
+                brightness = max(30, min(255, brightness))
                 sz = max(1, 2 - idx // 3)
-                s = pygame.Surface((sz * 2, sz * 2), pygame.SRCALPHA)
-                pygame.draw.circle(s, (255, 255, 220, a), (sz, sz), sz)
-                screen.blit(s, (tx - sz, ty - sz))
+                pygame.draw.circle(screen, (brightness, brightness, int(brightness * 0.85)), (tx, ty), sz)
 
             # Draw head
             head_a = int(255 * (ss['life'] / 40))
@@ -326,11 +400,12 @@ class Background:
             curve_offset = int(-self.road_geometry.current_curve * 20)
         mesa_scroll = (int(self.scroll_y * 0.15) - curve_offset) % tile_w
 
-        # Horizon glow
-        glow_alpha = int(50 + 30 * math.sin(self._tick * 0.02))
-        glow = pygame.Surface((SCREEN_WIDTH, 4), pygame.SRCALPHA)
-        glow.fill((*_V2_HORIZON_GLOW, glow_alpha))
-        screen.blit(glow, (0, _HORIZON_Y - 2))
+        # Horizon glow (pre-allocated surface)
+        if not hasattr(self, '_mesa_horizon_glow'):
+            self._mesa_horizon_glow = pygame.Surface((SCREEN_WIDTH, 6), pygame.SRCALPHA)
+        glow_alpha = int(40 + 20 * math.sin(self._tick * 0.015))
+        self._mesa_horizon_glow.fill((*_V2_HORIZON_GLOW, glow_alpha))
+        screen.blit(self._mesa_horizon_glow, (0, _HORIZON_Y - 3))
 
         for mx, mh, mw, flat in self._mesas:
             sx = (mx - mesa_scroll) % tile_w - 200
@@ -348,8 +423,8 @@ class Background:
             pygame.draw.line(screen, _V2_MESA_RIM,
                              (sx + inset, _HORIZON_Y - mh),
                              (sx + inset + flat, _HORIZON_Y - mh), 2)
-            # Left slope rim highlight
-            pygame.draw.line(screen, (120, 50, 35),
+            # Left slope rim highlight (warm amber)
+            pygame.draw.line(screen, (180, 90, 40),
                              (sx, _HORIZON_Y),
                              (sx + inset, _HORIZON_Y - mh), 1)
 
@@ -366,9 +441,20 @@ class Background:
         use_rg = rg is not None
         road_half_base = _V2_ROAD_HALF if use_rg else _ROAD_HALF
 
+        # Pre-fetch arrays for inner loop speed
+        line_z = self._line_z
+        line_t = self._line_t
+        draw_line = pygame.draw.line
+        floor = math.floor
+
         for i in range(_GROUND_ROWS):
-            z = self._line_z[i]
-            t = self._line_t[i]
+            t = line_t[i]
+
+            # === Skip every other scanline in the top 30% (near horizon, lines are <2px wide) ===
+            if t < 0.30 and (i & 1):
+                continue
+
+            z = line_z[i]
 
             # === Get center and width from road geometry or straight fallback ===
             if use_rg:
@@ -376,7 +462,6 @@ class Background:
                 center_x = sd.center_x
                 half_road = int(sd.half_w)
                 y = int(sd.screen_y)
-                # Clamp y to valid screen range
                 if y < _HORIZON_Y or y >= SCREEN_HEIGHT:
                     continue
             else:
@@ -386,103 +471,263 @@ class Background:
 
             road_l = int(center_x - half_road)
             road_r = int(center_x + half_road)
+
+            # === Band index (perspective-correct) ===
+            pattern = (z - camera_z) / _BAND_WORLD
+            band = int(floor(pattern)) & 1
+            slot = min(4, int(t * 5))
+            gc = _STRIP_A[slot] if band == 0 else _STRIP_B[slot]
+
+            # Skip road details when too narrow (near horizon) — single fill
+            if half_road < 4:
+                draw_line(screen, gc, (0, y), (SCREEN_WIDTH, y))
+                continue
+
             sh_w = int(_SHOULDER_W * t)
             shoulder_l = road_l - sh_w
             shoulder_r = road_r + sh_w
             rw = max(1, int(_RUMBLE_W * t))
 
-            # === Band index (perspective-correct) ===
-            pattern = (z - camera_z) / _BAND_WORLD
-            band = int(math.floor(pattern)) % 2
-            rumble_band = int(math.floor(pattern * 3)) % 2
-            slot = min(4, int(t * 5))
-
-            # === Off-road (full width outside shoulders) ===
-            gc = _STRIP_A[slot] if band == 0 else _STRIP_B[slot]
+            # === Full scanline drawn in order: ground, shoulder, road, rumble, edge, markers ===
+            # Off-road ground
             if shoulder_l > 0:
-                pygame.draw.line(screen, gc, (0, y), (shoulder_l, y))
+                draw_line(screen, gc, (0, y), (shoulder_l, y))
             if shoulder_r < SCREEN_WIDTH:
-                pygame.draw.line(screen, gc,
-                                 (shoulder_r, y), (SCREEN_WIDTH, y))
+                draw_line(screen, gc, (shoulder_r, y), (SCREEN_WIDTH, y))
 
-            # Skip road details when too narrow (near horizon)
-            if half_road < 3:
-                pygame.draw.line(screen, gc, (shoulder_l, y), (shoulder_r, y))
-                continue
+            # Shoulders + road as 3 lines (shoulder_l, road, shoulder_r)
+            sc = _SHOULDER_BAND_A if band == 0 else _SHOULDER_BAND_B
+            road_c = _ROAD_BAND_A if band == 0 else _ROAD_BAND_B
+            if sh_w > 1:
+                draw_line(screen, sc, (shoulder_l, y), (road_l, y))
+                draw_line(screen, sc, (road_r, y), (shoulder_r, y))
+            draw_line(screen, road_c, (road_l + rw, y), (road_r - rw, y))
 
-            # === Shoulders ===
-            if sh_w > 0:
-                sc = _SHOULDER_BAND_A if band == 0 else _SHOULDER_BAND_B
-                pygame.draw.line(screen, sc, (shoulder_l, y), (road_l, y))
-                pygame.draw.line(screen, sc, (road_r, y), (shoulder_r, y))
+            # Rumble strips
+            rc = _RUMBLE_A if (int(floor(pattern * 3)) & 1) == 0 else _RUMBLE_B
+            draw_line(screen, rc, (road_l, y), (road_l + rw, y))
+            draw_line(screen, rc, (road_r - rw, y), (road_r, y))
 
-            # === Rumble strips ===
-            rc = _RUMBLE_A if rumble_band == 0 else _RUMBLE_B
-            pygame.draw.line(screen, rc, (road_l, y), (road_l + rw, y))
-            pygame.draw.line(screen, rc, (road_r - rw, y), (road_r, y))
-
-            # === Road surface ===
-            inner_l = road_l + rw
-            inner_r = road_r - rw
-            if inner_r > inner_l:
-                road_c = _ROAD_BAND_A if band == 0 else _ROAD_BAND_B
-                pygame.draw.line(screen, road_c, (inner_l, y), (inner_r, y))
-
-            # === Edge glow (tapers with perspective, V2+ enhanced) ===
+            # Edge glow
             ew = max(1, int(2 * t))
-            pygame.draw.line(screen, _EDGE_GLOW,
-                             (road_l - ew, y), (road_l + ew, y))
-            pygame.draw.line(screen, _EDGE_GLOW,
-                             (road_r - ew, y), (road_r + ew, y))
+            draw_line(screen, _EDGE_GLOW, (road_l - ew, y), (road_l + ew, y))
+            draw_line(screen, _EDGE_GLOW, (road_r - ew, y), (road_r + ew, y))
 
-            # V2+ enhanced road edge glow (every 3rd scanline)
-            if self.tier >= 2 and i % 3 == 0:
-                # Speed-responsive color: cyan → hot pink at high speed
-                edge_color = _EDGE_GLOW
-                if hasattr(self, '_synth'):
-                    speed_t = min(1.0, self.scroll_y * _SCROLL_K * 0.001)
-                    edge_color = (
-                        int(20 + 235 * speed_t),
-                        int(120 - 70 * speed_t),
-                        int(150 - 30 * speed_t),
-                    )
-                # Inner glow (w4, alpha ~80)
-                iw = max(1, int(4 * t))
-                s_inner = pygame.Surface((iw, 1), pygame.SRCALPHA)
-                s_inner.fill((*edge_color, 80))
-                screen.blit(s_inner, (road_l - iw // 2, y))
-                screen.blit(s_inner, (road_r - iw // 2, y))
-                # Mid glow (w8, alpha ~40)
-                mw = max(1, int(8 * t))
-                s_mid = pygame.Surface((mw, 1), pygame.SRCALPHA)
-                s_mid.fill((*edge_color, 40))
-                screen.blit(s_mid, (road_l - mw // 2, y))
-                screen.blit(s_mid, (road_r - mw // 2, y))
-                # Outer glow (w12, alpha ~15)
-                ow = max(1, int(12 * t))
-                s_out = pygame.Surface((ow, 1), pygame.SRCALPHA)
-                s_out.fill((*edge_color, 15))
-                screen.blit(s_out, (road_l - ow // 2, y))
-                screen.blit(s_out, (road_r - ow // 2, y))
-
-            # === Perspective-correct dashed markers ===
+            # === Dashed markers ===
             dash_phase = ((z - camera_z) / _DASH_WORLD_PERIOD) % 1.0
             cx = int(center_x)
 
-            # Center line (magenta, 2px)
             if dash_phase < _DASH_ON_RATIO:
-                pygame.draw.line(screen, NEON_MAGENTA,
-                                 (cx - 1, y), (cx, y))
+                draw_line(screen, NEON_MAGENTA, (cx - 1, y), (cx, y))
 
-            # Lane lines (at 1/4 and 3/4 of tapered road width)
             if dash_phase < _LANE_ON_RATIO and half_road > 15:
-                quarter = half_road // 2
-                lane1 = cx - quarter
-                lane2 = cx + quarter
-                pygame.draw.line(screen, _LANE_COLOR,
-                                 (lane1, y), (lane1, y))
-                pygame.draw.line(screen, _LANE_COLOR,
-                                 (lane2, y), (lane2, y))
+                quarter = half_road >> 1
+                draw_line(screen, _LANE_COLOR, (cx - quarter, y), (cx - quarter, y))
+                draw_line(screen, _LANE_COLOR, (cx + quarter, y), (cx + quarter, y))
+
+    def _make_crack_tile(self):
+        """Pre-bake 800x4 road crack overlay."""
+        tile = pygame.Surface((SCREEN_WIDTH, 4), pygame.SRCALPHA)
+        rng = random.Random(77)
+        for _ in range(20):
+            x = rng.randint(0, SCREEN_WIDTH)
+            w = rng.randint(10, 60)
+            pygame.draw.line(tile, (90, 45, 15, 80), (x, rng.randint(0, 3)),
+                             (x + w, rng.randint(0, 3)), 1)
+        return tile
+
+    def _make_lightning_bolt(self):
+        """Generate jagged midpoint-displaced polyline for lightning."""
+        x1 = random.randint(SCREEN_WIDTH // 4, 3 * SCREEN_WIDTH // 4)
+        y1 = 0
+        x2 = x1 + random.randint(-80, 80)
+        y2 = _HORIZON_Y
+        points = [(x1, y1), (x2, y2)]
+        # 3 levels of midpoint displacement
+        for _ in range(3):
+            new_pts = [points[0]]
+            for i in range(len(points) - 1):
+                mx = (points[i][0] + points[i + 1][0]) // 2 + random.randint(-25, 25)
+                my = (points[i][1] + points[i + 1][1]) // 2
+                new_pts.append((mx, my))
+                new_pts.append(points[i + 1])
+            points = new_pts
+        return points
+
+    def _draw_v3(self, speed, screen):
+        """Full V3: crimson storm sky, no sun, tinted mesas, storm walls, lightning."""
+        # Crimson sky
+        screen.blit(self._v3_sky, (0, 0))
+
+        # Storm walls (oscillating position)
+        for wall in self._storm_walls:
+            ox = int(math.sin(self._tick * 0.01 + wall['phase']) * 60)
+            bx = (wall['base_x'] + ox + int(self.scroll_y * wall['speed'])) % (SCREEN_WIDTH + wall['surf'].get_width()) - wall['surf'].get_width()
+            screen.blit(wall['surf'], (bx, 0))
+
+        # Stars still visible (dimmer through storm)
+        self._draw_stars(screen)
+
+        # Skip sun — storm-obscured
+
+        # Mesas tinted crimson
+        self._draw_mesas_deep(screen)
+        self._draw_mesas(screen)
+
+        # Horizon glow (crimson)
+        if not hasattr(self, '_v3_horizon_glow'):
+            self._v3_horizon_glow = pygame.Surface((SCREEN_WIDTH, 14), pygame.SRCALPHA)
+        pulse = 0.7 + 0.3 * math.sin(self._tick * 0.008)
+        glow_a = int(40 + 25 * pulse)
+        self._v3_horizon_glow.fill((180, 30, 10, glow_a))
+        screen.blit(self._v3_horizon_glow, (0, _HORIZON_Y - 7))
+
+        # Draw scorched road (override colors)
+        self._draw_perspective_ground_v3(screen)
+
+        # Lightning bolts (1/200 chance per frame, 8-frame life)
+        if self._lightning_cooldown > 0:
+            self._lightning_cooldown -= 1
+        if self._lightning is None and random.random() < 0.005 and self._lightning_cooldown <= 0:
+            self._lightning = {
+                'points': self._make_lightning_bolt(),
+                'life': 8,
+            }
+            self._lightning_cooldown = 60
+        if self._lightning:
+            bolt = self._lightning
+            a = int(255 * (bolt['life'] / 8))
+            color = (255, 220, 180, min(255, a))
+            if len(bolt['points']) >= 2:
+                pygame.draw.lines(screen, color[:3], False, bolt['points'], 2)
+                # Bright core
+                pygame.draw.lines(screen, (255, 255, 255), False, bolt['points'], 1)
+            bolt['life'] -= 1
+            if bolt['life'] <= 0:
+                self._lightning = None
+
+        # Dust devils
+        for dd in self._dust_devils:
+            dd_x = (dd['x'] + int(self.scroll_y * 0.1)) % SCREEN_WIDTH
+            dd_phase = self._tick * 0.05 + dd['phase']
+            for ring in range(4):
+                r = dd['size'] - ring * 4
+                if r < 3:
+                    break
+                ox = int(math.sin(dd_phase + ring * 0.5) * ring * 2)
+                y_base = _HORIZON_Y + 20 + ring * 8
+                pygame.draw.ellipse(screen, (120, 60, 20, max(20, 80 - ring * 20)),
+                                    (dd_x + ox - r, y_base - r // 3, r * 2, r))
+
+        # Floating embers (aggressive, 160 cap)
+        self._ember_timer += 1
+        if self._ember_timer >= 4:
+            self._ember_timer = 0
+            for _ in range(4):
+                ex = random.randint(0, SCREEN_WIDTH)
+                ey = random.randint(SCREEN_HEIGHT * 2 // 3, SCREEN_HEIGHT)
+                color = random.choice([
+                    (255, 80, 20), (255, 50, 10), (255, 120, 30), (200, 40, 10),
+                ])
+                vx = random.uniform(-0.5, 0.5)
+                vy = random.uniform(-1.5, -0.5)
+                life = random.randint(100, 180)
+                self._embers.spawn(ex, ey, vx, vy, life, color, size=random.choice([1, 2]))
+        self._embers.update()
+        self._embers.draw(screen)
+
+    def _draw_perspective_ground_v3(self, screen):
+        """V3 scorched road with crack overlay — delegates to base with color override."""
+        camera_z = self.scroll_y * _SCROLL_K
+        rg = self.road_geometry
+        use_rg = rg is not None
+        road_half_base = _V2_ROAD_HALF if use_rg else _ROAD_HALF
+
+        line_z = self._line_z
+        line_t = self._line_t
+        draw_line = pygame.draw.line
+        floor = math.floor
+
+        # V3 scorched road colors
+        v3_road_a = (60, 30, 10)
+        v3_road_b = (75, 40, 15)
+        # V3 ground strips — dark scorched earth
+        v3_strip_a = [
+            (40, 18, 12), (55, 28, 15), (70, 35, 18), (85, 42, 22), (100, 50, 25),
+        ]
+        v3_strip_b = [
+            (30, 14, 10), (42, 22, 12), (55, 30, 15), (68, 38, 18), (80, 45, 22),
+        ]
+
+        for i in range(_GROUND_ROWS):
+            t = line_t[i]
+            if t < 0.30 and (i & 1):
+                continue
+            z = line_z[i]
+
+            if use_rg:
+                sd = rg.scanline_data[i]
+                center_x = sd.center_x
+                half_road = int(sd.half_w)
+                y = int(sd.screen_y)
+                if y < _HORIZON_Y or y >= SCREEN_HEIGHT:
+                    continue
+            else:
+                center_x = ROAD_CENTER
+                half_road = int(road_half_base * t)
+                y = _HORIZON_Y + i
+
+            road_l = int(center_x - half_road)
+            road_r = int(center_x + half_road)
+
+            pattern = (z - camera_z) / _BAND_WORLD
+            band = int(floor(pattern)) & 1
+            slot = min(4, int(t * 5))
+            gc = v3_strip_a[slot] if band == 0 else v3_strip_b[slot]
+
+            if half_road < 4:
+                draw_line(screen, gc, (0, y), (SCREEN_WIDTH, y))
+                continue
+
+            sh_w = int(_SHOULDER_W * t)
+            shoulder_l = road_l - sh_w
+            shoulder_r = road_r + sh_w
+            rw = max(1, int(_RUMBLE_W * t))
+
+            if shoulder_l > 0:
+                draw_line(screen, gc, (0, y), (shoulder_l, y))
+            if shoulder_r < SCREEN_WIDTH:
+                draw_line(screen, gc, (shoulder_r, y), (SCREEN_WIDTH, y))
+
+            sc = _SHOULDER_BAND_A if band == 0 else _SHOULDER_BAND_B
+            road_c = v3_road_a if band == 0 else v3_road_b
+            if sh_w > 1:
+                draw_line(screen, sc, (shoulder_l, y), (road_l, y))
+                draw_line(screen, sc, (road_r, y), (shoulder_r, y))
+            draw_line(screen, road_c, (road_l + rw, y), (road_r - rw, y))
+
+            rc = _RUMBLE_A if (int(floor(pattern * 3)) & 1) == 0 else _RUMBLE_B
+            draw_line(screen, rc, (road_l, y), (road_l + rw, y))
+            draw_line(screen, rc, (road_r - rw, y), (road_r, y))
+
+            ew = max(1, int(2 * t))
+            draw_line(screen, (200, 50, 20), (road_l - ew, y), (road_l + ew, y))
+            draw_line(screen, (200, 50, 20), (road_r - ew, y), (road_r + ew, y))
+
+            # Dashed markers
+            dash_phase = ((z - camera_z) / _DASH_WORLD_PERIOD) % 1.0
+            cx = int(center_x)
+            if dash_phase < _DASH_ON_RATIO:
+                draw_line(screen, (200, 40, 20), (cx - 1, y), (cx, y))
+            if dash_phase < _LANE_ON_RATIO and half_road > 15:
+                quarter = half_road >> 1
+                draw_line(screen, (100, 50, 30), (cx - quarter, y), (cx - quarter, y))
+                draw_line(screen, (100, 50, 30), (cx + quarter, y), (cx + quarter, y))
+
+        # Road crack overlay (blit every 8th scanline group)
+        if hasattr(self, '_crack_tile'):
+            for cy in range(_HORIZON_Y + 20, SCREEN_HEIGHT, 30):
+                screen.blit(self._crack_tile, (0, cy), special_flags=pygame.BLEND_RGB_ADD)
 
     def _draw_v2(self, speed, screen):
         """Full V2+ pseudo-3D: synthwave sky -> stars -> sun -> mesas -> ground."""
@@ -494,35 +739,39 @@ class Background:
 
         self._draw_stars(screen)
 
-        # Synthwave sun — half-sunk into horizon, very slow bob
+        # Synthwave sun — sitting on horizon, deeply submerged (classic retrowave)
         if hasattr(self, '_sun_surf'):
             sun_h = self._sun_surf.get_height()
-            sun_y = _HORIZON_Y - sun_h // 2 + int(1.5 * math.sin(self._tick * 0.002))
+            sun_y = _HORIZON_Y - int(sun_h * 0.45) + int(2.0 * math.sin(self._tick * 0.003))
             sun_x = SCREEN_WIDTH // 2 - self._sun_surf.get_width() // 2
             screen.blit(self._sun_surf, (sun_x, sun_y))
 
-        # Deep mesa layer (slowest parallax)
+        # Warm sun glow band along horizon
+        if hasattr(self, '_sun_glow_band'):
+            screen.blit(self._sun_glow_band, (0, _HORIZON_Y - 15))
+
+        # Deep mesa layer (slowest parallax) — partially occludes rays for depth
         if hasattr(self, '_mesas_deep'):
             self._draw_mesas_deep(screen)
 
         self._draw_mesas(screen)
 
-        # Soft horizon glow band (pre-rendered, slow pulse)
+        # Soft horizon glow band — wider, warmer, gentle pulse
         if hasattr(self, '_synth'):
             if not hasattr(self, '_horizon_glow'):
-                self._horizon_glow = pygame.Surface((SCREEN_WIDTH, 8), pygame.SRCALPHA)
-            pulse = 0.6 + 0.4 * math.sin(self._tick * 0.008)
-            glow_a = int(30 + 25 * pulse)
-            self._horizon_glow.fill((220, 120, 60, glow_a))
-            screen.blit(self._horizon_glow, (0, _HORIZON_Y - 4))
+                self._horizon_glow = pygame.Surface((SCREEN_WIDTH, 14), pygame.SRCALPHA)
+            pulse = 0.7 + 0.3 * math.sin(self._tick * 0.006)
+            glow_a = int(35 + 20 * pulse)
+            self._horizon_glow.fill((180, 100, 50, glow_a))
+            screen.blit(self._horizon_glow, (0, _HORIZON_Y - 7))
 
         self._draw_perspective_ground(screen)
 
-        # Heat shimmer near horizon (slow, subtle)
+        # Heat shimmer near horizon (gentle wave distortion)
         if hasattr(self, '_shimmer_lines'):
             for idx, line in enumerate(self._shimmer_lines):
-                base_y = _HORIZON_Y + 10 + idx * 6
-                offset_x = int(math.sin(base_y * 0.05 + self._tick * 0.015) * 1.5)
+                base_y = _HORIZON_Y + 8 + idx * 10
+                offset_x = int(math.sin(idx * 0.8 + self._tick * 0.02) * 3.0)
                 screen.blit(line, (offset_x, base_y))
 
         # Floating ember particles
@@ -564,8 +813,11 @@ class Background:
                 self.road_geometry.advance(actual_speed)
                 self.road_geometry.compute_projection()
             self._rg_ticked = False
-            # V2+: full pseudo-3D (everything drawn inside perspective ground)
-            self._draw_v2(actual_speed, screen)
+            if self.tier >= 3 and hasattr(self, '_v3_sky'):
+                self._draw_v3(actual_speed, screen)
+            else:
+                # V2+: full pseudo-3D (everything drawn inside perspective ground)
+                self._draw_v2(actual_speed, screen)
         else:
             # V1: flat desert fill + solid road
             screen.fill(DESERT_BG)
@@ -602,15 +854,16 @@ class Background:
                                      (lane_x, y + DASH_LENGTH // 2), 1)
                     y += dash_period
 
-        # Speed streaks (shared V1+V2)
-        if speed > 8:
-            intensity = min(30, int((speed - 8) * 12))
-            line_surf = pygame.Surface((2, int(speed * 4)), pygame.SRCALPHA)
-            line_surf.fill((*WHITE, min(60, intensity * 3)))
+        # Speed streaks (shared V1+V2) — subtle, fewer
+        if speed > 10:
+            intensity = min(12, int((speed - 10) * 4))
+            if not hasattr(self, '_streak_surf'):
+                self._streak_surf = pygame.Surface((1, 30), pygame.SRCALPHA)
+                self._streak_surf.fill((255, 255, 255, 35))
             for _ in range(intensity):
                 lx = random.randint(0, SCREEN_WIDTH)
-                ly = random.randint(0, SCREEN_HEIGHT)
-                screen.blit(line_surf, (lx, ly))
+                ly = random.randint(_HORIZON_Y, SCREEN_HEIGHT)
+                screen.blit(self._streak_surf, (lx, ly))
 
         # Sand particles (shared V1+V2)
         self.sand_timer += 1

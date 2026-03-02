@@ -79,6 +79,54 @@ class ExcitebikeBg:
             # VFX post-processing
             self._vfx = VFXState(enable_scanlines=True)
 
+        # --- V3 Midnight Neon Rain Upgrades ---
+        if tier >= 3:
+            from core.vfx import (
+                make_multi_gradient, NEONRAIN_PALETTE, AmbientParticles, VFXState,
+            )
+            self._neonrain = NEONRAIN_PALETTE
+
+            # Midnight sky (near-black 4-stop)
+            self._v3_sky = make_multi_gradient(SCREEN_WIDTH, self.GROUND_Y, [
+                (0.0, (2, 2, 6)),
+                (0.35, (4, 4, 12)),
+                (0.70, (6, 5, 16)),
+                (1.0, (8, 6, 18)),
+            ])
+
+            # Rain particles (250 cap)
+            self._rain = AmbientParticles(250)
+
+            # Neon billboard surfaces (2 pre-baked)
+            self._billboards = self._make_billboards()
+            self._billboard_flicker = [0, 0]
+
+            # Wet lane reflection tile
+            self._wet_lane_tile = self._make_wet_lane_tile()
+
+            # Fog band surfaces (3 layers at different depths)
+            self._fog_bands = []
+            for i in range(3):
+                fog = pygame.Surface((SCREEN_WIDTH, 20), pygame.SRCALPHA)
+                a = 25 - i * 6
+                fog.fill((10, 10, 25, max(8, a)))
+                self._fog_bands.append({'surf': fog, 'y': 120 + i * 50, 'speed': 0.1 + i * 0.05})
+
+            # Puddle ripple states
+            self._puddles = []
+            p_rng = random.Random(99)
+            for _ in range(8):
+                self._puddles.append({
+                    'x': p_rng.randint(50, SCREEN_WIDTH - 50),
+                    'lane': p_rng.randint(0, 2),
+                    'phase': p_rng.uniform(0, math.pi * 2),
+                    'size': p_rng.randint(8, 16),
+                })
+
+            # Override VFX with V3 tier + blue tone
+            self._vfx = VFXState(enable_scanlines=False, tier=3,
+                                 tone_color=(20, 30, 80))
+
     def _gen_mountains(self, num_peaks, min_h, max_h, seed=0):
         rng = random.Random(seed)
         points = []
@@ -179,6 +227,42 @@ class ExcitebikeBg:
                                  (cx - spread, y), (cx + spread, y))
         return surf
 
+    def _make_billboards(self):
+        """Pre-bake 2 neon billboard surfaces."""
+        boards = []
+        colors = [(0, 255, 220), (255, 0, 180)]
+        texts = ["NEON", "RUSH"]
+        for i, (color, text) in enumerate(zip(colors, texts)):
+            w, h = 80, 35
+            surf = pygame.Surface((w, h), pygame.SRCALPHA)
+            # Dark backing
+            pygame.draw.rect(surf, (10, 10, 20, 200), (0, 0, w, h))
+            # Neon border
+            pygame.draw.rect(surf, (*color, 200), (0, 0, w, h), 2)
+            # Glow border
+            pygame.draw.rect(surf, (*color, 60), (-2, -2, w + 4, h + 4), 4)
+            # Text (simple horizontal lines as pseudo-text)
+            for cy in range(8, h - 8, 5):
+                lw = random.Random(i * 100 + cy).randint(20, w - 20)
+                lx = (w - lw) // 2
+                pygame.draw.line(surf, color, (lx, cy), (lx + lw, cy), 2)
+            boards.append({'surf': surf, 'x': 120 + i * 500, 'y': 80 + i * 40})
+        return boards
+
+    def _make_wet_lane_tile(self):
+        """Pre-render wet lane tile with neon color smears."""
+        tile = pygame.Surface((SCREEN_WIDTH, self.LANE_HEIGHT), pygame.SRCALPHA)
+        tile.fill((30, 35, 50))
+        # Neon reflection smears
+        rng = random.Random(42)
+        for _ in range(30):
+            x = rng.randint(0, SCREEN_WIDTH)
+            w = rng.randint(20, 80)
+            color = rng.choice([(0, 255, 220, 15), (255, 0, 180, 12), (0, 180, 255, 10)])
+            pygame.draw.line(tile, color, (x, rng.randint(5, self.LANE_HEIGHT - 5)),
+                             (x + w, rng.randint(5, self.LANE_HEIGHT - 5)), 2)
+        return tile
+
     def get_hill_y(self, x):
         """Get ground height at position x (for physics)."""
         # Sine-sum terrain
@@ -269,6 +353,10 @@ class ExcitebikeBg:
         self.mountain_scroll += speed * 0.3
         self._tick += 1
 
+        if self.tier >= 3 and hasattr(self, '_v3_sky'):
+            self._draw_v3(speed, screen)
+            return
+
         # Sky gradient
         if self.tier >= 2 and hasattr(self, '_sky_gradient'):
             screen.blit(self._sky_gradient, (0, 0))
@@ -357,6 +445,105 @@ class ExcitebikeBg:
         if self.tier >= 2 and hasattr(self, '_vfx'):
             self._vfx.update()
             self._vfx.draw_post(screen)
+
+    def _draw_v3(self, speed, screen):
+        """Full V3: midnight sky, fog, rain, neon billboards, wet lanes, puddles."""
+        # Midnight sky
+        screen.blit(self._v3_sky, (0, 0))
+
+        # Fog bands at parallax depths (replaces mountains — hidden in fog)
+        for fb in self._fog_bands:
+            ox = int(self.mountain_scroll * fb['speed']) % 40
+            screen.blit(fb['surf'], (-ox, fb['y']))
+
+        # Neon billboards with periodic flicker
+        for i, bb in enumerate(self._billboards):
+            scroll_x = int(self.scroll_x * 0.15) % (SCREEN_WIDTH + 100)
+            bx = (bb['x'] - scroll_x) % (SCREEN_WIDTH + 100) - 50
+            # Flicker: briefly dim every ~120 frames
+            self._billboard_flicker[i] = max(0, self._billboard_flicker[i] - 1)
+            if random.random() < 0.008:
+                self._billboard_flicker[i] = random.randint(3, 8)
+            if self._billboard_flicker[i] <= 0:
+                screen.blit(bb['surf'], (bx, bb['y']))
+            else:
+                # Dimmed version
+                dim = bb['surf'].copy()
+                dim.set_alpha(80)
+                screen.blit(dim, (bx, bb['y']))
+
+        # Dark ground
+        pygame.draw.rect(screen, (8, 8, 14),
+                         (0, self.GROUND_Y, SCREEN_WIDTH, SCREEN_HEIGHT - self.GROUND_Y))
+
+        # Minimal terrain (dark outline only, no grass fill)
+        points = [(0, SCREEN_HEIGHT)]
+        for x in range(0, SCREEN_WIDTH + 4, 4):
+            y = self.get_hill_y(x)
+            points.append((x, int(y)))
+        points.append((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.draw.polygon(screen, (12, 14, 22), points)
+
+        # Wet lane tiles
+        for i, ly in enumerate(self.LANE_Y):
+            screen.blit(self._wet_lane_tile, (0, ly))
+            # Lane borders (dim cyan)
+            pygame.draw.line(screen, (0, 100, 120, 120), (0, ly), (SCREEN_WIDTH, ly), 1)
+            pygame.draw.line(screen, (0, 100, 120, 120),
+                             (0, ly + self.LANE_HEIGHT), (SCREEN_WIDTH, ly + self.LANE_HEIGHT), 1)
+            # Dashed center
+            dash_offset = int(self.scroll_x * 0.8) % 40
+            center_y = ly + self.LANE_HEIGHT // 2
+            for dx in range(-40 + dash_offset, SCREEN_WIDTH + 40, 40):
+                pygame.draw.line(screen, (60, 70, 90), (dx, center_y), (dx + 20, center_y), 1)
+
+        # Neon edge lines
+        pygame.draw.line(screen, NEON_CYAN,
+                         (0, self.LANE_Y[0] - 2), (SCREEN_WIDTH, self.LANE_Y[0] - 2), 2)
+        pygame.draw.line(screen, NEON_MAGENTA,
+                         (0, self.LANE_Y[-1] + self.LANE_HEIGHT + 2),
+                         (SCREEN_WIDTH, self.LANE_Y[-1] + self.LANE_HEIGHT + 2), 2)
+
+        # Neon glow on lane boundaries (V3: brighter, blue-shifted)
+        pulse = math.sin(self.scroll_x * 0.015)
+        for i in range(len(self.LANE_Y) + 1):
+            if i == 0:
+                ly = self.LANE_Y[0]
+            elif i == len(self.LANE_Y):
+                ly = self.LANE_Y[-1] + self.LANE_HEIGHT
+            else:
+                ly = self.LANE_Y[i]
+            glow_a = int(40 + 30 * (0.5 + 0.5 * pulse))
+            glow_surf = pygame.Surface((SCREEN_WIDTH, 3), pygame.SRCALPHA)
+            glow_surf.fill((0, 180, 255, glow_a))
+            screen.blit(glow_surf, (0, ly - 1))
+
+        # Puddle ripples (expanding circles, fading alpha)
+        for puddle in self._puddles:
+            px = (puddle['x'] - int(self.scroll_x * 0.6)) % SCREEN_WIDTH
+            py = self.LANE_Y[puddle['lane']] + self.LANE_HEIGHT // 2
+            phase = (self._tick * 0.06 + puddle['phase']) % (math.pi * 2)
+            r = int(puddle['size'] * (0.3 + 0.7 * abs(math.sin(phase))))
+            a = max(20, int(60 * (1 - abs(math.sin(phase)))))
+            if r > 2:
+                pygame.draw.circle(screen, (40, 60, 120, a), (px, py), r, 1)
+                if r > 5:
+                    pygame.draw.circle(screen, (60, 80, 140, a // 2), (px, py), r - 3, 1)
+
+        # Rain particles (fast downward, 8-12 per 2 frames)
+        if self._tick % 2 == 0:
+            for _ in range(random.randint(8, 12)):
+                rx = random.randint(0, SCREEN_WIDTH)
+                ry = random.randint(-20, 0)
+                self._rain.spawn(rx, ry, random.uniform(-0.3, 0.3),
+                                 random.uniform(8, 14), random.randint(40, 70),
+                                 (160, 180, 255), size=1)
+        self._rain.update()
+        self._rain.draw(screen)
+
+        # V3 post-processing
+        self._vfx.update()
+        self._vfx.draw_post(screen)
 
     def _draw_mountains(self, screen, peaks, color, scroll, base_y):
         offset = int(scroll) % (SCREEN_WIDTH * 3)

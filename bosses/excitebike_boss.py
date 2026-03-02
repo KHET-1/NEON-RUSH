@@ -21,7 +21,7 @@ from core.constants import (
     NEON_CYAN, NEON_MAGENTA, SOLAR_YELLOW, SOLAR_WHITE,
     ROAD_LEFT, ROAD_RIGHT, ROAD_COLOR,
 )
-from core.sound import SFX
+from core.sound import play_sfx
 from core.fonts import load_font
 from shared.boss_base import Boss, BossPhase, AttackPattern, HeatBolt
 
@@ -44,10 +44,10 @@ class HomingMissile(pygame.sprite.Sprite):
         self.pos = [float(x), float(y)]
         self.speed = speed
         self.target = target
-        self.turn_rate = 0.06
+        self.turn_rate = 0.10  # was 0.06 — tighter tracking
         self.angle = math.pi / 2  # pointing down initially
         self.alive = True
-        self.life = 300  # max frames before self-destruct
+        self.life = 180  # was 300 — shorter but deadlier
 
     def update(self):
         self.life -= 1
@@ -136,6 +136,14 @@ class ShockwaveAttack(AttackPattern):
         self.wave_height = 20
         self.telegraph_done = False
         self.damage_dealt = set()
+        # Phase 3: second delayed shockwave
+        self.wave2_y = 0
+        self.wave2_active = False
+        self.wave2_delay = 30  # frames after first wave
+        self.wave2_damage_dealt = set()
+
+    def play_start_sfx(self):
+        play_sfx("boss_rumble")
 
     def start(self, boss):
         super().start(boss)
@@ -143,6 +151,11 @@ class ShockwaveAttack(AttackPattern):
         self.wave_active = False
         self.telegraph_done = False
         self.damage_dealt = set()
+        self.wave_speed = 5 + boss.current_phase_idx * 2
+        self.wave2_y = 0
+        self.wave2_active = False
+        self.wave2_damage_dealt = set()
+        self._do_double = boss.current_phase_idx >= 2
 
     def update(self, boss, players, particles, dt=1):
         self.timer += 1
@@ -157,19 +170,25 @@ class ShockwaveAttack(AttackPattern):
             self.telegraph_done = True
             self.wave_active = True
             self.wave_y = boss.rect.bottom
-            SFX["boost"].play()
+            play_sfx("boss_slam")
 
-        # Advance shockwave downward
+        # Launch second wave after delay (phase 3)
+        if (self._do_double and not self.wave2_active and
+                self.timer >= 40 + self.wave2_delay):
+            self.wave2_active = True
+            self.wave2_y = boss.rect.bottom
+
+        # Advance shockwave(s) downward
         if self.wave_active:
             self.wave_y += self.wave_speed
-            # Check collision with players
+        if self.wave2_active:
+            self.wave2_y += self.wave_speed
+            # Check collision with players (wave 1)
             wave_rect = pygame.Rect(ROAD_LEFT, int(self.wave_y) - self.wave_height // 2,
                                     ROAD_RIGHT - ROAD_LEFT, self.wave_height)
             for p in players:
                 if not p.alive or id(p) in self.damage_dealt:
                     continue
-                # Player can dodge by jumping (vel_y < 0 means airborne/rising,
-                # or rect.bottom significantly above wave)
                 if (wave_rect.colliderect(p.rect) and p.vel_y >= 0 and
                         p.rect.bottom >= self.wave_y - 25):
                     if hasattr(boss, 'shake') and boss.shake:
@@ -180,13 +199,39 @@ class ShockwaveAttack(AttackPattern):
             if self.wave_y > SCREEN_HEIGHT + 30:
                 self.wave_active = False
 
+        # Check collision for wave 2
+        if self.wave2_active:
+            wave2_rect = pygame.Rect(ROAD_LEFT, int(self.wave2_y) - self.wave_height // 2,
+                                     ROAD_RIGHT - ROAD_LEFT, self.wave_height)
+            for p in players:
+                if not p.alive or id(p) in self.wave2_damage_dealt:
+                    continue
+                if (wave2_rect.colliderect(p.rect) and p.vel_y >= 0 and
+                        p.rect.bottom >= self.wave2_y - 25):
+                    if hasattr(boss, 'shake') and boss.shake:
+                        p.take_hit(boss.shake)
+                    self.wave2_damage_dealt.add(id(p))
+            if self.wave2_y > SCREEN_HEIGHT + 30:
+                self.wave2_active = False
+
         if self.timer >= self.DURATION:
             self.active = False
             return True
         return False
 
+    def _draw_wave(self, screen, wy, boss):
+        """Draw a single shockwave band at y position."""
+        alpha = max(60, 200 - abs(wy - boss.rect.bottom))
+        wave_surf = pygame.Surface((ROAD_RIGHT - ROAD_LEFT, self.wave_height), pygame.SRCALPHA)
+        pygame.draw.rect(wave_surf, (255, 100, 30, min(255, alpha)),
+                         (0, 0, ROAD_RIGHT - ROAD_LEFT, self.wave_height))
+        pygame.draw.line(wave_surf, (255, 220, 100, min(255, alpha + 50)),
+                         (0, self.wave_height // 2),
+                         (ROAD_RIGHT - ROAD_LEFT, self.wave_height // 2), 3)
+        screen.blit(wave_surf, (ROAD_LEFT, wy - self.wave_height // 2))
+
     def draw(self, screen, boss):
-        if not self.wave_active:
+        if not self.wave_active and not self.wave2_active:
             # Telegraph: draw warning lines
             if self.timer < 40 and (self.timer // 5) % 2 == 0:
                 pygame.draw.line(screen, (255, 80, 30),
@@ -194,17 +239,10 @@ class ShockwaveAttack(AttackPattern):
                                  (ROAD_RIGHT, boss.rect.bottom + 10), 3)
             return
 
-        # Draw shockwave -- horizontal energy band
-        wy = int(self.wave_y)
-        alpha = max(60, 200 - abs(wy - boss.rect.bottom))
-        wave_surf = pygame.Surface((ROAD_RIGHT - ROAD_LEFT, self.wave_height), pygame.SRCALPHA)
-        pygame.draw.rect(wave_surf, (255, 100, 30, min(255, alpha)),
-                         (0, 0, ROAD_RIGHT - ROAD_LEFT, self.wave_height))
-        # Bright center line
-        pygame.draw.line(wave_surf, (255, 220, 100, min(255, alpha + 50)),
-                         (0, self.wave_height // 2),
-                         (ROAD_RIGHT - ROAD_LEFT, self.wave_height // 2), 3)
-        screen.blit(wave_surf, (ROAD_LEFT, wy - self.wave_height // 2))
+        if self.wave_active:
+            self._draw_wave(screen, int(self.wave_y), boss)
+        if self.wave2_active:
+            self._draw_wave(screen, int(self.wave2_y), boss)
 
 
 class MissileBarrageAttack(AttackPattern):
@@ -237,10 +275,12 @@ class MissileBarrageAttack(AttackPattern):
             if alive_players:
                 target = random.choice(alive_players)
                 m = HomingMissile(boss.rect.centerx - 20, boss.rect.centery,
-                                  target, speed=3.0 + boss.current_phase.speed_mult)
+                                  target, speed=4.0 + boss.current_phase.speed_mult)
+                m.turn_rate = 0.10 + boss.current_phase_idx * 0.02
                 self.missiles.append(m)
                 particles.burst(boss.rect.centerx - 20, boss.rect.centery,
                                 [(255, 120, 30), (255, 200, 60)], 4, 3, 15, 2)
+                play_sfx("missile_launch")
 
         # Update missiles
         for m in self.missiles[:]:
@@ -256,6 +296,7 @@ class MissileBarrageAttack(AttackPattern):
                         p.take_hit(boss.shake)
                     particles.burst(m.rect.centerx, m.rect.centery,
                                     [(255, 100, 30), (255, 200, 60)], 8, 4, 25, 3)
+                    play_sfx("missile_hit")
                     m.alive = False
                     m.kill()
                     if m in self.missiles:
@@ -301,26 +342,52 @@ class ChargeAttack(AttackPattern):
         self.original_x = 0
         self.warning_y = 0
         self.hit_players = set()
+        self.charges_done = 0
+        self.max_charges = 1
+        self._between_charges = False
+        self._between_timer = 0
+
+    def play_start_sfx(self):
+        play_sfx("boss_rumble")
 
     def start(self, boss):
         super().start(boss)
         self.charging = False
         self.original_x = boss.rect.centerx
         self.warning_y = boss.rect.centery
-        self.charge_dir = -1
+        # Phase 2+: random direction
+        self.charge_dir = random.choice([-1, 1]) if boss.current_phase_idx >= 1 else -1
         self.hit_players = set()
+        # Phase 3: double charge
+        self.max_charges = 2 if boss.current_phase_idx >= 2 else 1
+        self.charges_done = 0
+        self._between_charges = False
+        self._between_timer = 0
+        self.charge_speed = 12 + boss.current_phase_idx * 3
+        self.telegraph_frames = max(30, 50 - boss.current_phase_idx * 10)
 
     def update(self, boss, players, particles, dt=1):
         self.timer += 1
 
-        if self.timer < self.telegraph_frames:
+        # Between charges pause
+        if self._between_charges:
+            self._between_timer += 1
+            if self._between_timer >= 30:
+                self._between_charges = False
+                self.charging = True
+                self.charge_dir = -self.charge_dir  # reverse direction
+                self.hit_players = set()
+                play_sfx("charge_whoosh")
+            return False
+
+        if self.timer < self.telegraph_frames and self.charges_done == 0:
             # Telegraph: boss revs and shakes
             boss.rect.x += random.choice([-2, 2])
             return False
 
-        if not self.charging and self.timer == self.telegraph_frames:
+        if not self.charging and self.charges_done == 0 and self.timer >= self.telegraph_frames:
             self.charging = True
-            SFX["boost"].play()
+            play_sfx("charge_whoosh")
 
         if self.charging:
             boss.rect.x += self.charge_dir * int(self.charge_speed * boss.current_phase.speed_mult)
@@ -335,15 +402,18 @@ class ChargeAttack(AttackPattern):
                         p.take_hit(boss.shake)
                     self.hit_players.add(id(p))
 
-            # Went off left edge -- reverse direction
-            if boss.rect.right < ROAD_LEFT - 50:
-                self.charge_dir = 1
-            # Returned to right side
-            if self.charge_dir == 1 and boss.rect.centerx >= self.original_x:
-                boss.rect.centerx = self.original_x
+            # Went off edge — reverse or finish
+            off_left = boss.rect.right < ROAD_LEFT - 50
+            off_right = boss.rect.left > SCREEN_WIDTH + 50
+            if off_left or off_right:
+                self.charges_done += 1
                 self.charging = False
+                boss.rect.centerx = self.original_x
+                if self.charges_done < self.max_charges:
+                    self._between_charges = True
+                    self._between_timer = 0
 
-        if self.timer >= self.DURATION:
+        if self.timer >= self.DURATION or (self.charges_done >= self.max_charges and not self.charging):
             boss.rect.centerx = self.original_x
             self.active = False
             return True
@@ -409,6 +479,230 @@ class ComboAttack(AttackPattern):
 
 
 # ---------------------------------------------------------------------------
+# New Attack Patterns
+# ---------------------------------------------------------------------------
+
+class RampBarrage(AttackPattern):
+    """Boss kicks 3-5 ramps backward at player. Phases 2-3.
+    Risk/reward: jump onto ramp = launch + env damage to boss. Hit on ground = player damage."""
+    NAME = "ramp_barrage"
+    DURATION = 180
+    WEIGHT = 0.9
+
+    def __init__(self):
+        super().__init__()
+        self.ramp_projectiles = []
+        self.fire_times = []
+
+    def start(self, boss):
+        super().start(boss)
+        self.ramp_projectiles = []
+        count = random.randint(3, 5)
+        self.fire_times = sorted([random.randint(20, 120) for _ in range(count)])
+
+    def update(self, boss, players, particles, dt=1):
+        self.timer += 1
+
+        # Fire ramps at scheduled times
+        while self.fire_times and self.timer >= self.fire_times[0]:
+            self.fire_times.pop(0)
+            ry = boss.rect.centery + random.randint(-30, 30)
+            self.ramp_projectiles.append({
+                'x': float(boss.rect.left),
+                'y': float(ry),
+                'speed': random.uniform(8, 10),
+                'width': 50,
+                'height': 20,
+                'alive': True,
+                'hit_players': set(),
+            })
+            particles.burst(boss.rect.left, int(ry),
+                            [SOLAR_YELLOW, (200, 140, 30)], 4, 3, 15, 2)
+
+        # Update ramps — fly LEFT
+        for ramp in self.ramp_projectiles:
+            if ramp['alive']:
+                ramp['x'] -= ramp['speed']
+                if ramp['x'] < -80:
+                    ramp['alive'] = False
+                # Check player collision (ground hit = damage)
+                ramp_rect = pygame.Rect(int(ramp['x']), int(ramp['y'] - ramp['height'] // 2),
+                                        ramp['width'], ramp['height'])
+                for p in players:
+                    if not p.alive or id(p) in ramp['hit_players']:
+                        continue
+                    if ramp_rect.colliderect(p.rect):
+                        # Airborne player = ramp deals environmental damage to boss
+                        if hasattr(p, 'airborne') and p.airborne:
+                            boss.take_damage(boss.ENVIRONMENTAL_DAMAGE, "environmental")
+                            if hasattr(boss, 'shake') and boss.shake:
+                                boss.shake.trigger(6, 18)
+                            if boss.particles:
+                                boss.particles.burst(
+                                    int(ramp['x']), int(ramp['y']),
+                                    [SOLAR_YELLOW, SOLAR_WHITE], 12, 5, 30, 3)
+                            ramp['alive'] = False
+                        else:
+                            # Ground hit = player damage
+                            if hasattr(boss, 'shake') and boss.shake:
+                                p.take_hit(boss.shake)
+                            ramp['hit_players'].add(id(p))
+
+        self.ramp_projectiles = [r for r in self.ramp_projectiles if r['alive']]
+
+        if self.timer >= self.DURATION:
+            self.active = False
+            return True
+        return False
+
+    def draw(self, screen, boss):
+        for ramp in self.ramp_projectiles:
+            if ramp['alive']:
+                rx = int(ramp['x'])
+                ry = int(ramp['y'] - ramp['height'] // 2)
+                rw, rh = ramp['width'], ramp['height']
+                surf = pygame.Surface((rw, rh), pygame.SRCALPHA)
+                points = [(0, rh), (5, 0), (rw - 5, 0), (rw, rh)]
+                pygame.draw.polygon(surf, (200, 140, 30), points)
+                pygame.draw.polygon(surf, SOLAR_YELLOW, points, 2)
+                screen.blit(surf, (rx, ry))
+
+    def get_ramp_rects(self):
+        """Return hazard rects for grounded players."""
+        rects = []
+        for ramp in self.ramp_projectiles:
+            if ramp['alive']:
+                rects.append(pygame.Rect(int(ramp['x']),
+                                         int(ramp['y'] - ramp['height'] // 2),
+                                         ramp['width'], ramp['height']))
+        return rects
+
+
+class ExhaustTrail(AttackPattern):
+    """Boss drives across screen leaving fire trails on 2-3 lane Y positions.
+    Phase 3 only. Lane control forces player to read which lanes are on fire."""
+    NAME = "exhaust_trail"
+    DURATION = 200
+    WEIGHT = 0.8
+
+    def __init__(self):
+        super().__init__()
+        self.flame_segments = []
+        self.passes = []
+        self.current_pass = 0
+
+    def start(self, boss):
+        super().start(boss)
+        self.flame_segments = []
+        self.current_pass = 0
+        # Plan 2-3 passes across different Y positions
+        num_passes = random.randint(2, 3)
+        self.passes = []
+        for i in range(num_passes):
+            lane_y = random.randint(150, SCREEN_HEIGHT - 100)
+            self.passes.append({
+                'y': lane_y,
+                'start_frame': 30 + i * 50,  # 30-frame telegraph per pass
+                'x': -50.0,
+                'active': False,
+                'done': False,
+                'dir': 1 if i % 2 == 0 else -1,
+                'telegraphed': False,
+            })
+
+    def update(self, boss, players, particles, dt=1):
+        self.timer += 1
+
+        for i, pass_info in enumerate(self.passes):
+            if pass_info['done']:
+                continue
+
+            # Telegraph phase
+            if self.timer >= pass_info['start_frame'] - 30 and not pass_info['telegraphed']:
+                pass_info['telegraphed'] = True
+
+            # Start pass
+            if self.timer >= pass_info['start_frame'] and not pass_info['active']:
+                pass_info['active'] = True
+                pass_info['x'] = -50.0 if pass_info['dir'] == 1 else float(SCREEN_WIDTH + 50)
+
+            if pass_info['active']:
+                pass_info['x'] += pass_info['dir'] * 12
+                # Leave flame segment
+                if self.timer % 3 == 0:
+                    self.flame_segments.append({
+                        'x': int(pass_info['x']),
+                        'y': pass_info['y'],
+                        'width': 30,
+                        'height': 16,
+                        'life': 120,
+                        'hit_players': set(),
+                    })
+                # Check if pass is done
+                if pass_info['dir'] == 1 and pass_info['x'] > SCREEN_WIDTH + 60:
+                    pass_info['done'] = True
+                elif pass_info['dir'] == -1 and pass_info['x'] < -60:
+                    pass_info['done'] = True
+
+        # Update flame segments — damage players, decay
+        for seg in self.flame_segments[:]:
+            seg['life'] -= 1
+            if seg['life'] <= 0:
+                self.flame_segments.remove(seg)
+                continue
+            seg_rect = pygame.Rect(seg['x'] - seg['width'] // 2,
+                                   seg['y'] - seg['height'] // 2,
+                                   seg['width'], seg['height'])
+            for p in players:
+                if not p.alive or id(p) in seg['hit_players']:
+                    continue
+                if p.invincible_timer > 0 or p.ghost_mode:
+                    continue
+                if seg_rect.colliderect(p.rect):
+                    if hasattr(boss, 'shake') and boss.shake:
+                        p.take_hit(boss.shake)
+                    seg['hit_players'].add(id(p))
+
+        if self.timer >= self.DURATION:
+            self.flame_segments.clear()
+            self.active = False
+            return True
+        return False
+
+    def draw(self, screen, boss):
+        # Draw telegraph indicators
+        for pass_info in self.passes:
+            if pass_info['telegraphed'] and not pass_info['active']:
+                if (self.timer // 5) % 2 == 0:
+                    pygame.draw.line(screen, (255, 100, 30),
+                                     (ROAD_LEFT, pass_info['y']),
+                                     (ROAD_RIGHT, pass_info['y']), 2)
+
+        # Draw flame segments
+        for seg in self.flame_segments:
+            alpha = min(200, int(200 * (seg['life'] / 120.0)))
+            sx = seg['x'] - seg['width'] // 2
+            sy = seg['y'] - seg['height'] // 2
+            flame_surf = pygame.Surface((seg['width'], seg['height']), pygame.SRCALPHA)
+            flame_surf.fill((255, 80, 20, alpha))
+            screen.blit(flame_surf, (sx, sy))
+            # Bright core
+            if seg['life'] > 60:
+                core_surf = pygame.Surface((seg['width'] - 4, seg['height'] - 4), pygame.SRCALPHA)
+                core_surf.fill((255, 200, 60, alpha // 2))
+                screen.blit(core_surf, (sx + 2, sy + 2))
+
+    def get_flame_rects(self):
+        """Return active flame segment rects for collision."""
+        rects = []
+        for seg in self.flame_segments:
+            rects.append(pygame.Rect(seg['x'] - seg['width'] // 2,
+                                     seg['y'] - seg['height'] // 2,
+                                     seg['width'], seg['height']))
+        return rects
+
+
+# ---------------------------------------------------------------------------
 # Excitebike Boss
 # ---------------------------------------------------------------------------
 
@@ -436,7 +730,7 @@ class ExcitebikeBoss(Boss):
         self.ramps = pygame.sprite.Group()
         self.ramp_spawn_timer = 0
         self.ramp_scroll_speed = 4
-        super().__init__(self.base_x, self.base_y, particles)
+        super().__init__(self.base_x, self.base_y, particles, tier=evolution_tier)
 
     def _build_phases(self):
         """Construct 3 boss phases with escalating attack pools."""
@@ -448,7 +742,7 @@ class ExcitebikeBoss(Boss):
         phase1 = BossPhase(
             hp_threshold=1.0,
             attacks=phase1_attacks,
-            vulnerability_after_attack=90,
+            vulnerability_after_attack=50,
             speed_mult=1.0,
             color=NEON_CYAN,
         )
@@ -458,11 +752,12 @@ class ExcitebikeBoss(Boss):
             ShockwaveAttack(),
             MissileBarrageAttack(missile_count=5),
             ChargeAttack(),
+            RampBarrage(),
         ]
         phase2 = BossPhase(
             hp_threshold=0.66,
             attacks=phase2_attacks,
-            vulnerability_after_attack=75,
+            vulnerability_after_attack=36,
             speed_mult=1.3,
             color=SOLAR_YELLOW,
         )
@@ -470,14 +765,15 @@ class ExcitebikeBoss(Boss):
         # Phase 3: HP 33% - 0%
         phase3_attacks = [
             ShockwaveAttack(),
-            MissileBarrageAttack(missile_count=5),
+            MissileBarrageAttack(missile_count=6),
             ChargeAttack(),
             ComboAttack(),
+            ExhaustTrail(),
         ]
         phase3 = BossPhase(
             hp_threshold=0.33,
             attacks=phase3_attacks,
-            vulnerability_after_attack=60,
+            vulnerability_after_attack=25,
             speed_mult=1.6,
             color=NEON_MAGENTA,
         )
@@ -485,7 +781,11 @@ class ExcitebikeBoss(Boss):
         return [phase1, phase2, phase3]
 
     def _create_surface(self):
-        """Draw the armored motorcycle procedurally -- 120x80 px."""
+        """Draw the armored motorcycle procedurally."""
+        tier = self.tier
+        if tier >= 3:
+            return self._create_surface_v3()
+
         surf = pygame.Surface((120, 80), pygame.SRCALPHA)
         phase_color = self.current_phase.color if hasattr(self, 'current_phase') else NEON_CYAN
 
@@ -535,6 +835,74 @@ class ExcitebikeBoss(Boss):
 
         return surf
 
+    def _create_surface_v3(self):
+        """V3: Dark chrome armored bike — 130x85 with plasma vents and neon hubs."""
+        surf = pygame.Surface((130, 85), pygame.SRCALPHA)
+        phase_color = self.current_phase.color if hasattr(self, 'current_phase') else NEON_CYAN
+
+        # --- Dark chrome chassis ---
+        body_pts = [(15, 58), (32, 22), (98, 18), (120, 40), (115, 62), (15, 64)]
+        pygame.draw.polygon(surf, (35, 35, 50), body_pts)
+        # Chrome highlight stripe along top
+        pygame.draw.line(surf, (120, 120, 140), (35, 24), (96, 20), 2)
+
+        # Upper armor plate — darker
+        armor_pts = [(38, 24), (52, 10), (90, 8), (100, 19), (95, 30), (38, 30)]
+        pygame.draw.polygon(surf, (50, 50, 65), armor_pts)
+        pygame.draw.polygon(surf, phase_color, armor_pts, 2)
+
+        # Windshield with glow
+        windshield_pts = [(54, 11), (68, 4), (82, 4), (90, 11)]
+        pygame.draw.polygon(surf, (*phase_color[:3], 120), windshield_pts)
+        pygame.draw.lines(surf, (200, 200, 220), False, windshield_pts, 1)
+
+        # Engine block
+        pygame.draw.rect(surf, (40, 40, 55), (44, 35, 38, 22))
+        pygame.draw.rect(surf, phase_color, (44, 35, 38, 22), 1)
+
+        # 4 plasma vent circles on chassis
+        for vx, vy in [(48, 42), (58, 42), (68, 42), (78, 42)]:
+            pygame.draw.circle(surf, (20, 20, 30), (vx, vy), 4)
+            pygame.draw.circle(surf, phase_color, (vx, vy), 3)
+            pygame.draw.circle(surf, (200, 200, 255), (vx, vy), 1)
+
+        # Exhaust pipes with bloom
+        for ey in [44, 52]:
+            pygame.draw.line(surf, (140, 140, 160), (8, ey), (28, ey), 4)
+            # Exhaust bloom
+            pygame.draw.circle(surf, (255, 120, 40, 80), (6, ey), 5)
+            pygame.draw.circle(surf, (255, 200, 80), (6, ey), 2)
+
+        # --- Wheels with 6 spokes + neon hub rim ---
+        wheel_angle = getattr(self, 'wheel_angle', 0.0)
+        for wx, wy in [(105, 66), (28, 66)]:
+            pygame.draw.circle(surf, (30, 30, 40), (wx, wy), 15)
+            # Neon hub rim
+            pygame.draw.circle(surf, phase_color, (wx, wy), 15, 2)
+            # 6 spokes
+            for spoke in range(6):
+                angle = wheel_angle + spoke * (math.pi / 3)
+                sx = wx + int(math.cos(angle) * 11)
+                sy = wy + int(math.sin(angle) * 11)
+                pygame.draw.line(surf, (100, 100, 120), (wx, wy), (sx, sy), 1)
+            pygame.draw.circle(surf, phase_color, (wx, wy), 4)
+            pygame.draw.circle(surf, (200, 200, 220), (wx, wy), 2)
+
+        # --- Headlight ---
+        pygame.draw.circle(surf, SOLAR_WHITE, (118, 38), 6)
+        pygame.draw.circle(surf, SOLAR_YELLOW, (118, 38), 3)
+
+        # --- 5 armor spikes with bright tips ---
+        for sx in [42, 54, 66, 78, 90]:
+            pygame.draw.polygon(surf, (80, 80, 100),
+                                [(sx, 10), (sx + 3, 2), (sx + 6, 10)])
+            pygame.draw.circle(surf, phase_color, (sx + 3, 3), 2)
+
+        # Chrome edge highlight
+        pygame.draw.polygon(surf, (*phase_color[:3], 50), body_pts, 2)
+
+        return surf
+
     def _rebuild_surface(self):
         """Rebuild the boss surface to reflect current phase color + wheel animation."""
         self.wheel_angle += 0.2 * self.current_phase.speed_mult
@@ -567,6 +935,17 @@ class ExcitebikeBoss(Boss):
     def _draw_extras(self, screen):
         """Draw exhaust particles and phase indicator."""
         self.exhaust_timer += 1
+
+        # V3: speed blur lines behind boss
+        if self.tier >= 3 and self.alive and self.active:
+            blur_alpha = int(40 + 20 * math.sin(self.exhaust_timer * 0.1))
+            for i in range(5):
+                ly = self.rect.centery - 15 + i * 8
+                lx = self.rect.left - 20 - i * 12
+                lw = 15 + i * 5
+                line_surf = pygame.Surface((lw, 2), pygame.SRCALPHA)
+                line_surf.fill((*self.current_phase.color[:3], max(10, blur_alpha - i * 8)))
+                screen.blit(line_surf, (lx, ly))
 
         # Neon exhaust from rear
         if self.exhaust_timer % 3 == 0 and self.alive and self.active:
@@ -660,6 +1039,11 @@ class ExcitebikeBoss(Boss):
                     hazards.append(('rect', pygame.Rect(
                         ROAD_LEFT, wy - self.current_attack.wave_height // 2,
                         ROAD_RIGHT - ROAD_LEFT, self.current_attack.wave_height)))
+                if self.current_attack.wave2_active:
+                    wy2 = int(self.current_attack.wave2_y)
+                    hazards.append(('rect', pygame.Rect(
+                        ROAD_LEFT, wy2 - self.current_attack.wave_height // 2,
+                        ROAD_RIGHT - ROAD_LEFT, self.current_attack.wave_height)))
             elif isinstance(self.current_attack, MissileBarrageAttack):
                 for m in self.current_attack.missiles:
                     if m.alive:
@@ -668,15 +1052,24 @@ class ExcitebikeBoss(Boss):
                 if self.current_attack.charging:
                     hazards.append(('rect', self.rect))
             elif isinstance(self.current_attack, ComboAttack):
-                # Delegate to the active sub-attack
                 sub = self.current_attack
-                if sub.phase == "shockwave" and sub.shockwave.wave_active:
-                    wy = int(sub.shockwave.wave_y)
-                    hazards.append(('rect', pygame.Rect(
-                        ROAD_LEFT, wy - sub.shockwave.wave_height // 2,
-                        ROAD_RIGHT - ROAD_LEFT, sub.shockwave.wave_height)))
+                if sub.phase == "shockwave":
+                    if sub.shockwave.wave_active:
+                        wy = int(sub.shockwave.wave_y)
+                        hazards.append(('rect', pygame.Rect(
+                            ROAD_LEFT, wy - sub.shockwave.wave_height // 2,
+                            ROAD_RIGHT - ROAD_LEFT, sub.shockwave.wave_height)))
+                    if sub.shockwave.wave2_active:
+                        wy2 = int(sub.shockwave.wave2_y)
+                        hazards.append(('rect', pygame.Rect(
+                            ROAD_LEFT, wy2 - sub.shockwave.wave_height // 2,
+                            ROAD_RIGHT - ROAD_LEFT, sub.shockwave.wave_height)))
                 elif sub.phase == "missiles":
                     for m in sub.missiles.missiles:
                         if m.alive:
                             hazards.append(('rect', m.rect))
+            elif isinstance(self.current_attack, RampBarrage):
+                hazards.extend(('rect', r) for r in self.current_attack.get_ramp_rects())
+            elif isinstance(self.current_attack, ExhaustTrail):
+                hazards.extend(('rect', r) for r in self.current_attack.get_flame_rects())
         return hazards

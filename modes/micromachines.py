@@ -1,29 +1,20 @@
 import pygame
 import random
-import math
 
 from core.constants import (
-    SCREEN_WIDTH, SCREEN_HEIGHT, BLACK, NEON_CYAN, NEON_MAGENTA,
-    SOLAR_YELLOW, SOLAR_WHITE, COIN_GOLD, SHIELD_BLUE,
-    POWERUP_SHIELD, POWERUP_MAGNET, POWERUP_SLOWMO,
-    POWERUP_NUKE, POWERUP_PHASE, POWERUP_SURGE,
-    POWERUP_COLORS, NUKE_ORANGE, PHASE_CYAN, SURGE_PINK,
+    SCREEN_WIDTH, SCREEN_HEIGHT, BLACK,
     DIFFICULTY_SETTINGS, DIFF_NORMAL, MODE_MICROMACHINES,
 )
-from core.sound import SFX, music_loops
+from core.sound import music_loops
 import core.sound as _snd
-from core.hud import FloatingText, draw_panel
-from core.ui import MilestoneTracker
+from core.hud import draw_hud
 from shared.game_mode import GameMode
-from shared.boss_base import HeatBolt
 from sprites.micromachines_sprites import (
     MicroPlayer, OilSlickHazard, TrackBarrier, TinyCar,
     MicroCoin, MicroPowerUp,
 )
 from backgrounds.micromachines_bg import MicroMachinesBG
-from sprites.asteroid import Asteroid, DIR_DOWN
 from bosses.micromachines_boss import MicroMachinesBoss
-from ai.controller import AIController, BrainController
 
 
 class MicroMachinesMode(GameMode):
@@ -31,9 +22,22 @@ class MicroMachinesMode(GameMode):
     MODE_INDEX = MODE_MICROMACHINES
     MUSIC_KEY = "micromachines"
 
-    BOSS_DISTANCE_THRESHOLD = 1.0
-    BOSS_SCORE_THRESHOLD = 6000
-    BOSS_TIME_THRESHOLD = 60 * 60  # 1 min
+    BOSS_DISTANCE_THRESHOLD = 0.5
+    BOSS_SCORE_THRESHOLD = 3000
+    BOSS_TIME_THRESHOLD = 1800  # ~30s
+
+    BOSS_POINTS = 5000
+
+    # No coin particles for top-down view
+    COIN_PARTICLE_COUNT = 0
+
+    # Circle shield for top-down car
+    SHIELD_DIMS = (30, 30)
+    SHIELD_OFFSET = (-15, -15)
+    SHIELD_SHAPE = 'circle'
+
+    # Faster asteroid spawning
+    ASTEROID_SPAWN_INTERVAL = 35
 
     def __init__(self, particles, shake, shared_state):
         super().__init__(particles, shake, shared_state)
@@ -41,20 +45,12 @@ class MicroMachinesMode(GameMode):
         self.obstacles = pygame.sprite.Group()
         self.oil_slicks = pygame.sprite.Group()
         self.tiny_cars = pygame.sprite.Group()
-        self.coins_group = pygame.sprite.Group()
-        self.powerups_group = pygame.sprite.Group()
-        self.heat_bolts = pygame.sprite.Group()
-
-        self.ai_controllers = []
 
         self.obstacle_timer = 0
         self.oil_timer = 0
         self.car_timer = 0
         self.coin_timer = 0
         self.powerup_timer = 0
-        self.difficulty_scale = 1.0
-        self.floating_texts = []
-        self.milestone = MilestoneTracker()
         self.scroll_speed = 3.0
 
     def setup(self):
@@ -79,38 +75,18 @@ class MicroMachinesMode(GameMode):
         self.shared_state.inject_into_players(self.players)
 
         # Configure AI players
-        ai_cfg = self.shared_state.ai_config
-        ai_indices = ai_cfg.get("ai_players", [])
-        score_mult = ai_cfg.get("score_mult", 1)
-        use_brains = self.shared_state.brain_config.get("use_brains", False)
-        brain_map = self.shared_state.brain_config.get("brain_map", {})
-        self.ai_controllers = []
-        for idx in ai_indices:
-            if idx < len(self.players):
-                p = self.players[idx]
-                p.is_ai = True
-                p.score_mult = score_mult
-                brain = brain_map.get(idx)
-                if use_brains and brain is not None:
-                    p.color_main = BrainController.COLOR_MAIN
-                    p.color_accent = BrainController.COLOR_ACCENT
-                    p.base_surf = p._make_car()
-                    p.image = p.base_surf.copy()
-                    p.name = brain.name[:10]
-                    brain.start_episode(p)
-                    self.ai_controllers.append(BrainController(brain, p, MODE_MICROMACHINES))
-                else:
-                    p.color_main = AIController.COLOR_MAIN
-                    p.color_accent = AIController.COLOR_ACCENT
-                    p.base_surf = p._make_car()
-                    p.image = p.base_surf.copy()
-                    p.name = f"AI{idx + 1}"
-                    self.ai_controllers.append(AIController(p, MODE_MICROMACHINES))
+        def _rebuild_car(p):
+            p.base_surf = p._make_car()
+            p.image = p.base_surf.copy()
+        self.configure_ai_players(rebuild_sprite_fn=_rebuild_car)
 
         for p in self.players:
             self.all_sprites.add(p)
 
-        if music_loops and not _snd.music_channel.get_busy():
+        # Initialize task system
+        self.init_tasks(boss_rush=getattr(self, '_boss_rush', False))
+
+        if _snd.sound_enabled and music_loops and not _snd.music_channel.get_busy():
             _snd.music_channel.play(music_loops.get("micromachines", music_loops.get("desert")), loops=-1)
             _snd.music_channel.set_volume(0.08)
 
@@ -122,7 +98,7 @@ class MicroMachinesMode(GameMode):
 
         alive_players = self.get_alive_players()
         if not alive_players:
-            SFX["gameover"].play()
+            _snd.play_sfx("gameover")
             return 'gameover'
 
         max_speed = max(abs(p.speed) for p in alive_players)
@@ -145,52 +121,11 @@ class MicroMachinesMode(GameMode):
         # Update background
         self.bg.update(self.scroll_speed)
 
-        # --- Boss logic ---
-        if self.boss_active and self.boss:
-            self.boss.update(alive_players, self.scroll_speed)
-
-            # Auto-fire when boss alive
-            has_target = self.boss and self.boss.alive
-            for p in alive_players:
-                fired, bx, by = p.try_fire_heat_bolt(keys, auto_fire=has_target)
-                if fired:
-                    bolt = HeatBolt(bx, by, p.color_accent)
-                    bolt.speed = -8
-                    self.heat_bolts.add(bolt)
-
-            for bolt in list(self.heat_bolts):
-                bolt.update()
-                if self.boss and self.boss.alive and bolt.rect.colliderect(self.boss.rect):
-                    self.boss.take_damage(bolt.damage, "heat_bolt")
-                    self.particles.burst(bolt.rect.centerx, bolt.rect.centery,
-                                         [SOLAR_YELLOW, SOLAR_WHITE], 6, 3, 20, 2)
-                    bolt.kill()
-
-            if self.boss and self.boss.alive and self.boss.vulnerable:
-                for p in alive_players:
-                    if p.rect.colliderect(self.boss.rect) and p.invincible_timer <= 0:
-                        self.boss.take_damage(self.boss.RAM_DAMAGE, "ram")
-                        p.invincible_timer = 30
-                        self.shake.trigger(6, 15)
-
-            if self.boss and self.boss.defeated and self.boss.death_timer <= 0:
-                self.boss_active = False
-                self.shared_state.snapshot_from_players(self.players)
-                self.shared_state.advance_mode()
-                for p in alive_players:
-                    boss_pts = 5000 * p.score_mult
-                    p.score += boss_pts
-                    self.floating_texts.append(
-                        FloatingText(p.rect.centerx, p.rect.top - 40, f"+{boss_pts} FINAL BOSS!", SOLAR_YELLOW, 28))
-                return 'boss_defeated'
-        elif self.phase == 'asteroids':
-            result = self._update_asteroid_phase(keys, alive_players, diff_s)
-            if result:
-                return result
-        else:
-            if self.check_asteroid_trigger():
-                self.start_asteroid_phase()
-                SFX["asteroid_warning"].play()
+        # --- Phase dispatch (boss/asteroid/normal) ---
+        result = self._update_phase_logic(keys, alive_players,
+                                          self.scroll_speed, diff_s)
+        if result:
+            return result
 
         # --- Spawning ---
         if self.boss_active:
@@ -233,9 +168,9 @@ class MicroMachinesMode(GameMode):
             self.coin_timer = 0
 
         self.powerup_timer += 1
-        if self.powerup_timer > 400:
+        if self.powerup_timer > 200:
             x = random.randint(100, SCREEN_WIDTH - 100)
-            pu = MicroPowerUp(x, -30)
+            pu = MicroPowerUp(x, -30, tier=self.shared_state.evolution_tier)
             self.all_sprites.add(pu)
             self.powerups_group.add(pu)
             self.powerup_timer = 0
@@ -250,7 +185,14 @@ class MicroMachinesMode(GameMode):
         for c in list(self.coins_group):
             c.update(self.scroll_speed)
         for pu in list(self.powerups_group):
-            pu.update(self.scroll_speed)
+            pu.update(self.scroll_speed, players=alive_players)
+            # Sparkle particle trail
+            if pu.alive() and pu.pulse % 4 == 0:
+                self.particles.emit(
+                    pu.rect.centerx + random.randint(-3, 3),
+                    pu.rect.centery + random.randint(-2, 3),
+                    pu.color, [random.uniform(-0.5, 0.5), random.uniform(-1.0, 0.5)],
+                    22, 2)
 
         # Collisions
         for p in alive_players:
@@ -259,14 +201,14 @@ class MicroMachinesMode(GameMode):
                 if hit:
                     hit.kill()
                     p.take_hit(self.shake)
-                    if not p.alive and not any(pl.alive for pl in self.players):
+                    if self._check_all_dead():
                         return 'gameover'
 
                 car_hit = pygame.sprite.spritecollideany(p, self.tiny_cars)
                 if car_hit:
                     car_hit.kill()
                     p.take_hit(self.shake)
-                    if not p.alive and not any(pl.alive for pl in self.players):
+                    if self._check_all_dead():
                         return 'gameover'
 
             # Oil slick = spin + slow (phase skips oil too)
@@ -275,147 +217,25 @@ class MicroMachinesMode(GameMode):
                 p.angle += random.uniform(-0.3, 0.3)
                 p.speed *= 0.9
 
-            # Coins
+            # Coins + Powerups
             collected = pygame.sprite.spritecollide(p, self.coins_group, True)
-            for _ in collected:
-                p.coins += 1
-                p.combo.hit()
-                pts = p.combo.get_bonus(50) * p.score_mult
-                p.score += pts
-                self.floating_texts.append(
-                    FloatingText(p.rect.centerx, p.rect.top - 15, f"+{pts}", COIN_GOLD))
-                SFX["coin"].play()
+            self._collect_coins(p, collected)
 
-            # Powerups
             collected_pups = pygame.sprite.spritecollide(p, self.powerups_group, True)
-            for pu in collected_pups:
-                if pu.kind == POWERUP_SHIELD:
-                    p.shield = True
-                    p.shield_timer = 600
-                elif pu.kind == POWERUP_MAGNET:
-                    p.magnet = True
-                    p.magnet_timer = 480
-                elif pu.kind == POWERUP_SLOWMO:
-                    p.slowmo = True
-                    p.slowmo_timer = 300
-                elif pu.kind == POWERUP_NUKE:
-                    for oil in list(self.oil_slicks):
-                        self.particles.burst(oil.rect.centerx, oil.rect.centery,
-                                              [NUKE_ORANGE, SOLAR_YELLOW], 6, 3, 20, 2)
-                        p.score += 50 * p.score_mult
-                        oil.kill()
-                    for car in list(self.tiny_cars):
-                        self.particles.burst(car.rect.centerx, car.rect.centery,
-                                              [NUKE_ORANGE, SOLAR_YELLOW], 8, 4, 25, 2)
-                        p.score += 50 * p.score_mult
-                        car.kill()
-                    for ast in list(self.asteroids):
-                        self.particles.burst(*ast.get_death_particles())
-                        p.score += ast.points * p.score_mult
-                        self.asteroids_cleared += 1
-                        ast.kill()
-                    self.shake.trigger(8, 20)
-                    SFX["nuke"].play()
-                elif pu.kind == POWERUP_PHASE:
-                    p.phase = True
-                    p.phase_timer = 360
-                    SFX["phase"].play()
-                elif pu.kind == POWERUP_SURGE:
-                    p.surge = True
-                    p.surge_timer = 180
-                    p.speed = 8
-                    p.invincible_timer = max(p.invincible_timer, 180)
-                    SFX["surge"].play()
-                pts_pu = 100 * p.score_mult
-                p.score += pts_pu
-                self.particles.burst(p.rect.centerx, p.rect.centery,
-                                      [POWERUP_COLORS[pu.kind]], 6, 3, 20, 3)
-                self.floating_texts.append(
-                    FloatingText(p.rect.centerx, p.rect.top - 15, f"+{pts_pu}", POWERUP_COLORS[pu.kind]))
-                if pu.kind not in (POWERUP_NUKE, POWERUP_PHASE, POWERUP_SURGE):
-                    SFX["powerup"].play()
+            self._collect_powerups(p, collected_pups)
+
+        self._check_near_misses()
+
+        # Task system tick
+        if self.task_mgr:
+            self.task_mgr.tick(self)
+
+        # New weapon systems
+        self._update_homing_rockets(alive_players)
+        self._update_orbit_orbs(alive_players)
 
         self.particles.update()
         self.shake.update()
-        return None
-
-    def _update_asteroid_phase(self, keys, alive_players, diff_s):
-        """Handle asteroid phase: vertical asteroids falling down."""
-        # Fire heat bolts (go UP, auto-fire when asteroids on screen)
-        has_target = len(self.asteroids) > 0
-        for p in alive_players:
-            fired, bx, by = p.try_fire_heat_bolt(keys, auto_fire=has_target)
-            if fired:
-                bolt = HeatBolt(bx, by, p.color_accent)
-                bolt.speed = -8
-                self.heat_bolts.add(bolt)
-
-        # Update heat bolts — check asteroid collisions
-        for bolt in list(self.heat_bolts):
-            bolt.update()
-            if not bolt.alive:
-                continue
-            for ast in list(self.asteroids):
-                if bolt.rect.colliderect(ast.rect):
-                    destroyed = ast.take_hit(bolt.damage)
-                    self.particles.burst(bolt.rect.centerx, bolt.rect.centery,
-                                         [SOLAR_YELLOW, SOLAR_WHITE], 6, 3, 20, 2)
-                    bolt.kill()
-                    if destroyed:
-                        for p in alive_players:
-                            pts = ast.points * p.score_mult
-                            p.score += pts
-                            self.floating_texts.append(
-                                FloatingText(ast.rect.centerx, ast.rect.top - 10,
-                                             f"+{pts}", SOLAR_YELLOW))
-                        if destroyed['terminal']:
-                            self.particles.burst(*ast.get_death_particles())
-                            self.asteroids_cleared += 1
-                            SFX["asteroid_destroy"].play()
-                        else:
-                            self.particles.burst(*ast.get_split_particles())
-                            self.shake.trigger(3, 8)
-                            SFX["asteroid_split"].play()
-                            for frag_info in destroyed['fragments']:
-                                child = Asteroid.spawn_fragment(frag_info)
-                                self.asteroids.add(child)
-                                self.all_sprites.add(child)
-                    else:
-                        SFX["asteroid_hit"].play()
-                    break
-
-        # Spawn asteroids across full width
-        self.asteroid_timer += 1
-        if self.asteroid_timer > 35:
-            ax = random.randint(80, SCREEN_WIDTH - 80)
-            ast = Asteroid(ax, -40, direction=DIR_DOWN)
-            self.asteroids.add(ast)
-            self.all_sprites.add(ast)
-            self.asteroid_timer = 0
-
-        # Update asteroids
-        for ast in list(self.asteroids):
-            ast.update(self.scroll_speed)
-
-        # Asteroid-player collision
-        for p in alive_players:
-            if p.invincible_timer <= 0 and not p.ghost_mode and not p.phase:
-                hit = pygame.sprite.spritecollideany(p, self.asteroids)
-                if hit:
-                    hit.kill()
-                    p.take_hit(self.shake)
-                    if not p.alive and not any(pl.alive for pl in self.players):
-                        return 'gameover'
-
-        # Check boss trigger
-        if self.check_boss_trigger():
-            self.start_boss_phase()
-            self.boss = MicroMachinesBoss(self.particles, shake=self.shake,
-                                         evolution_tier=self.shared_state.evolution_tier)
-            self.boss_active = True
-            self.all_sprites.add(self.boss)
-            SFX["boss_warning"].play()
-
         return None
 
     def draw(self, screen):
@@ -425,110 +245,46 @@ class MicroMachinesMode(GameMode):
         self.particles.draw(screen)
         self.all_sprites.draw(screen)
 
-        # Shield bubbles & powerup effects
+        # Draw heat bolts, homing rockets, and orbit orbs
+        self.heat_bolts.draw(screen)
+        self.homing_rockets.draw(screen)
+        self.orbit_orbs.draw(screen)
+
         alive_players = self.get_alive_players()
-        for p in alive_players:
-            if p.shield:
-                s = pygame.Surface((30, 30), pygame.SRCALPHA)
-                pulse = 0.65 + 0.35 * math.sin(self.tick * 0.08)
-                pygame.draw.circle(s, (*SHIELD_BLUE, int(50 * pulse)), (15, 15), 14, 2)
-                screen.blit(s, (p.rect.centerx - 15, p.rect.centery - 15))
-            if p.phase:
-                ghost_surf = pygame.Surface((30, 30), pygame.SRCALPHA)
-                ghost_surf.set_alpha(100)
-                pygame.draw.circle(ghost_surf, (*PHASE_CYAN, 60), (15, 15), 14)
-                screen.blit(ghost_surf, (p.rect.centerx - 15, p.rect.centery - 15))
-            if p.surge:
-                for i in range(4):
-                    y = random.randint(0, SCREEN_HEIGHT)
-                    pygame.draw.line(screen, (*SURGE_PINK, 80), (0, y), (12, y + random.randint(-8, 8)), 2)
-                    pygame.draw.line(screen, (*SURGE_PINK, 80), (SCREEN_WIDTH - 12, y), (SCREEN_WIDTH, y + random.randint(-8, 8)), 2)
+        self._draw_powerup_effects(screen, alive_players)
 
-        self._draw_hud(screen)
+        draw_hud(screen, self.players, self.game_distance, 999, self.two_player,
+                 tier=self.shared_state.evolution_tier, compact=True,
+                 level_label=self.shared_state.level_label)
 
-        for ft in self.floating_texts:
-            ft.draw(screen)
+        self._draw_common_overlay(screen)
 
-        self.milestone.draw(screen)
+    # --- Hook overrides ---
 
-        # Asteroid HUD
-        self.draw_asteroid_hud(screen)
+    def _asteroid_spawn_pos(self):
+        from sprites.asteroid import DIR_DOWN
+        ax = random.randint(80, SCREEN_WIDTH - 80)
+        return (ax, -40, DIR_DOWN, {})
 
-        if self.boss:
-            self.boss.draw(screen)
+    def _get_near_miss_obstacles(self):
+        return self.obstacles, lambda obs: obs.rect.top > SCREEN_HEIGHT
 
-    def _draw_hud(self, screen):
-        import math as _m
-        from core.fonts import FONT_HUD, FONT_HUD_SM
-        from core.hud import draw_lives_icons, _draw_text_glow, _hud_tick
+    # --- Mode-specific ---
 
-        tier = self.shared_state.evolution_tier
+    def _create_boss(self):
+        return MicroMachinesBoss(self.particles, shake=self.shake,
+                                evolution_tier=self.shared_state.evolution_tier)
 
-        for idx, player in enumerate(self.players):
-            if not player.alive and self.two_player:
-                continue
-            px = 8 if idx == 0 else SCREEN_WIDTH - 200
-            if not self.two_player:
-                px = 8
+    _surge_speed = 8
 
-            if tier >= 2:
-                speed_t = min(1.0, abs(player.speed) / 12.0)
-                border_col = tuple(
-                    int(player.color_accent[i] * (1 - speed_t) + NEON_MAGENTA[i] * speed_t)
-                    for i in range(3)
-                )
-            else:
-                border_col = player.color_accent
+    def get_rocket_targets(self):
+        targets = super().get_rocket_targets()
+        targets.extend(list(self.obstacles))
+        targets.extend(list(self.tiny_cars))
+        return targets
 
-            draw_panel(screen, pygame.Rect(px, 8, 190, 80), (0, 0, 0, 180), border_col, tier=tier)
-
-            if tier >= 2 and FONT_HUD_SM:
-                _draw_text_glow(screen, FONT_HUD_SM, player.name, player.color_accent,
-                                px + 8, 12, accent_color=NEON_CYAN)
-            elif FONT_HUD_SM:
-                label = FONT_HUD_SM.render(player.name, True, player.color_accent)
-                screen.blit(label, (px + 8, 12))
-            draw_lives_icons(screen, player, px + 55, 14)
-
-            heat_pct = min(100, int(player.heat))
-            bar_w = 170
-            bar_h = 10
-            pygame.draw.rect(screen, (32, 32, 42), (px + 10, 34, bar_w, bar_h))
-            fill_w = int(bar_w * heat_pct / 100)
-            if fill_w > 0:
-                bar_col = NEON_MAGENTA if heat_pct > 80 else player.color_accent
-                pygame.draw.rect(screen, bar_col, (px + 10, 34, fill_w, bar_h))
-
-                if tier >= 2:
-                    flow_x = int(_m.sin(_hud_tick * 0.1) * fill_w * 0.3)
-                    flow_w = max(4, fill_w // 4)
-                    flow_start = px + 10 + max(0, min(fill_w - flow_w, fill_w // 2 + flow_x))
-                    flow_surf = pygame.Surface((flow_w, bar_h), pygame.SRCALPHA)
-                    flow_surf.fill((255, 255, 255, 40))
-                    screen.blit(flow_surf, (flow_start, 34))
-                    if heat_pct > 80:
-                        glow_pulse = 0.5 + 0.5 * _m.sin(_hud_tick * 0.15)
-                        glow_a = int(80 * glow_pulse)
-                        pygame.draw.rect(screen, (*NEON_MAGENTA[:3], glow_a),
-                                         (px + 9, 33, fill_w + 2, bar_h + 2), 2)
-
-            if tier >= 2 and FONT_HUD_SM:
-                _draw_text_glow(screen, FONT_HUD_SM, f"{int(abs(player.speed) * 10)} km/h",
-                                SOLAR_WHITE, px + 10, 48, accent_color=player.color_accent)
-                _draw_text_glow(screen, FONT_HUD_SM, f"Score: {player.score}  x{player.coins}",
-                                COIN_GOLD, px + 10, 64, accent_color=(200, 180, 0))
-            elif FONT_HUD_SM:
-                spd = FONT_HUD_SM.render(f"{int(abs(player.speed) * 10)} km/h", True, SOLAR_WHITE)
-                screen.blit(spd, (px + 10, 48))
-                score_t = FONT_HUD_SM.render(f"Score: {player.score}  x{player.coins}", True, COIN_GOLD)
-                screen.blit(score_t, (px + 10, 64))
-
-        if tier >= 2 and FONT_HUD:
-            _draw_text_glow(screen, FONT_HUD, f"{self.game_distance:.1f} km",
-                            SOLAR_WHITE, SCREEN_WIDTH // 2 - 40, 12, accent_color=NEON_CYAN)
-        elif FONT_HUD:
-            dist_t = FONT_HUD.render(f"{self.game_distance:.1f} km", True, SOLAR_WHITE)
-            screen.blit(dist_t, (SCREEN_WIDTH // 2 - dist_t.get_width() // 2, 12))
+    def get_nukeable_groups(self):
+        return [self.oil_slicks, self.tiny_cars]
 
     def cleanup(self):
         if _snd.music_channel and _snd.music_channel.get_busy():

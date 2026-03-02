@@ -52,13 +52,14 @@ class Asteroid(RoadSpriteMixin, pygame.sprite.Sprite):
         self.base_radius = cfg["radius"]
         self.direction = direction
 
-        # Movement (slow drift — gives time to shoot)
+        # Movement — smaller = faster, larger = slower (scenic drift)
+        speed_mult = {"large": 0.4, "medium": 0.7, "small": 1.0}[self.size_name]
         if direction == DIR_DOWN:
-            self.vx = random.uniform(-0.15, 0.15)
-            self.vy = random.uniform(0.6, 1.4)
+            self.vx = random.uniform(-0.12, 0.12) * speed_mult
+            self.vy = random.uniform(0.4, 0.9) * speed_mult
         else:  # DIR_LEFT
-            self.vx = random.uniform(-1.4, -0.6)
-            self.vy = random.uniform(-0.15, 0.15)
+            self.vx = random.uniform(-0.9, -0.4) * speed_mult
+            self.vy = random.uniform(-0.12, 0.12) * speed_mult
 
         # Rotation / wobble
         self.angle = random.uniform(0, 360)
@@ -172,13 +173,13 @@ class Asteroid(RoadSpriteMixin, pygame.sprite.Sprite):
             if self.direction == DIR_DOWN:
                 fx = cx + sign * spread
                 fy = cy
-                child_vx = self.vx + sign * random.uniform(0.5, 1.0)
-                child_vy = self.vy * 1.2
+                child_vx = self.vx + sign * random.uniform(0.3, 0.6)
+                child_vy = self.vy * 1.1
             else:  # DIR_LEFT
                 fx = cx
                 fy = cy + sign * spread
-                child_vx = self.vx * 1.2
-                child_vy = self.vy + sign * random.uniform(0.5, 1.0)
+                child_vx = self.vx * 1.1
+                child_vy = self.vy + sign * random.uniform(0.3, 0.6)
             fragments.append({
                 'size': child_size,
                 'x': fx, 'y': fy,

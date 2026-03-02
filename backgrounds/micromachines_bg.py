@@ -110,7 +110,12 @@ class TrackSegment:
             self.curve_amplitude = 0
             self.rumble_side = None
 
-        self.center_x_end = center_x_start + self.curve_amplitude
+        if seg_type in (SEG_CHICANE_LR, SEG_CHICANE_RL):
+            # S-curve returns to starting X at t=1.0, so next segment
+            # must also start at center_x_start to avoid a visual jump.
+            self.center_x_end = center_x_start
+        else:
+            self.center_x_end = center_x_start + self.curve_amplitude
 
     def get_center_x(self, local_t):
         """Get track center x at local_t (0 = top, 1 = bottom).
@@ -281,6 +286,50 @@ class MicroMachinesBG:
                     pygame.draw.rect(self.layer_close.tile, (70, 55, 40),
                                      (ex, ey, cw, cw), 1)
 
+        # --- V3 Holographic Wireframe Upgrades ---
+        if tier >= 3:
+            from core.vfx import HOLO_PALETTE
+
+            self._holo = HOLO_PALETTE
+
+            # Override far layer to void-black with bright grid
+            self.layer_far.tile.fill((2, 3, 8))
+            grid_color = (0, 255, 180, 35)
+            grid_spacing = 30
+            for gx in range(0, SCREEN_WIDTH, grid_spacing):
+                pygame.draw.line(self.layer_far.tile, grid_color,
+                                 (gx, 0), (gx, self.layer_far.tile_height), 1)
+            for gy in range(0, self.layer_far.tile_height, grid_spacing):
+                pygame.draw.line(self.layer_far.tile, grid_color,
+                                 (0, gy), (SCREEN_WIDTH, gy), 1)
+            # Bright intersection dots
+            for gx in range(0, SCREEN_WIDTH, grid_spacing):
+                for gy in range(0, self.layer_far.tile_height, grid_spacing):
+                    pygame.draw.circle(self.layer_far.tile, (0, 255, 220, 60), (gx, gy), 2)
+
+            # Override close layer to darker void
+            self.layer_close.tile.fill((4, 5, 12))
+            grid_dim = (0, 120, 90, 25)
+            for gx in range(0, SCREEN_WIDTH, grid_spacing * 2):
+                pygame.draw.line(self.layer_close.tile, grid_dim,
+                                 (gx, 0), (gx, self.layer_close.tile_height), 1)
+            for gy in range(0, self.layer_close.tile_height, grid_spacing * 2):
+                pygame.draw.line(self.layer_close.tile, grid_dim,
+                                 (0, gy), (SCREEN_WIDTH, gy), 1)
+
+            # Pre-baked holographic grid tile for road (200x200)
+            self._holo_tile = self._make_holo_tile()
+
+            # Pre-baked edge glow strip (replaces per-scanline Surface alloc — perf fix!)
+            self._edge_glow_strip = pygame.Surface((8, 1), pygame.SRCALPHA)
+            self._edge_glow_strip.fill((0, 255, 200, 50))
+            self._edge_glow_wide = pygame.Surface((14, 1), pygame.SRCALPHA)
+            self._edge_glow_wide.fill((0, 255, 200, 20))
+
+            # Data wave state (max 3 active)
+            self._data_waves = []
+            self._data_wave_cooldown = 0
+
         # Center dash state
         self.dash_offset = 0.0
 
@@ -289,6 +338,25 @@ class MicroMachinesBG:
 
         # Pre-rendered checkpoint stripe surface
         self.checkpoint_surf = self._make_checkpoint_surface()
+
+    def _make_holo_tile(self):
+        """Pre-bake 200x200 holographic grid tile for road surface."""
+        size = 200
+        tile = pygame.Surface((size, size), pygame.SRCALPHA)
+        tile.fill((2, 3, 8))
+        # Thin cyan grid lines
+        spacing = 20
+        for x in range(0, size, spacing):
+            thick = 2 if x % (spacing * 2) == 0 else 1
+            pygame.draw.line(tile, (0, 200, 160, 40), (x, 0), (x, size), thick)
+        for y in range(0, size, spacing):
+            thick = 2 if y % (spacing * 2) == 0 else 1
+            pygame.draw.line(tile, (0, 200, 160, 40), (0, y), (size, y), thick)
+        # Intersection dots on primary lines
+        for x in range(0, size, spacing * 2):
+            for y in range(0, size, spacing * 2):
+                pygame.draw.circle(tile, (0, 255, 220, 80), (x, y), 2)
+        return tile
 
     def _gen_tire_marks(self):
         """Pre-generate tire mark positions for V2+ road surface."""
@@ -372,8 +440,8 @@ class MicroMachinesBG:
         self.total_distance += scroll_speed
         self.dash_offset = (self.dash_offset + scroll_speed) % (CENTER_DASH_LEN + CENTER_GAP_LEN)
 
-        # V2+ haze animation
-        if self.tier >= 2:
+        # V2+/V3 haze animation
+        if self.tier >= 2 and hasattr(self, '_haze_phase'):
             self._haze_phase += scroll_speed * 0.005
 
         # Update parallax layers
@@ -410,8 +478,10 @@ class MicroMachinesBG:
         for seg in self.segments:
             self._draw_segment(screen, seg)
 
-        # 7: V2+ atmosphere overlay
-        if self.tier >= 2:
+        # 7: V3 holographic overlay or V2 atmosphere overlay
+        if self.tier >= 3:
+            self._draw_v3_overlay(screen)
+        elif self.tier >= 2:
             self._draw_v2_overlay(screen)
 
     def _draw_segment(self, screen, seg):
@@ -444,8 +514,10 @@ class MicroMachinesBG:
             left = int(cx - HALF_TRACK)
             right = int(cx + HALF_TRACK)
 
-            # Road surface — V2+: alternate two close shades per-scanline
-            if self.tier >= 2:
+            # Road surface — V3: deep black holo base; V2: alternate shades
+            if self.tier >= 3:
+                pygame.draw.line(screen, (2, 3, 8), (left, y), (right, y))
+            elif self.tier >= 2:
                 world_y = y + self.scroll_offset
                 if int(world_y) % 6 < 3:
                     road_col = (30, 28, 42)
@@ -461,14 +533,21 @@ class MicroMachinesBG:
 
             # V2+: Edge glow (every 2nd scanline)
             if self.tier >= 2 and y % 2 == 0:
-                edge_s = pygame.Surface((6, 1), pygame.SRCALPHA)
-                edge_s.fill((*ROAD_EDGE_COLOR[:3], 40))
-                screen.blit(edge_s, (left - 3, y))
-                screen.blit(edge_s, (right - 3, y))
-                edge_s2 = pygame.Surface((10, 1), pygame.SRCALPHA)
-                edge_s2.fill((*ROAD_EDGE_COLOR[:3], 15))
-                screen.blit(edge_s2, (left - 5, y))
-                screen.blit(edge_s2, (right - 5, y))
+                if self.tier >= 3 and hasattr(self, '_edge_glow_strip'):
+                    # V3: pre-baked strips (perf fix: no per-scanline Surface alloc)
+                    screen.blit(self._edge_glow_strip, (left - 4, y))
+                    screen.blit(self._edge_glow_strip, (right - 4, y))
+                    screen.blit(self._edge_glow_wide, (left - 7, y))
+                    screen.blit(self._edge_glow_wide, (right - 7, y))
+                else:
+                    edge_s = pygame.Surface((6, 1), pygame.SRCALPHA)
+                    edge_s.fill((*ROAD_EDGE_COLOR[:3], 40))
+                    screen.blit(edge_s, (left - 3, y))
+                    screen.blit(edge_s, (right - 3, y))
+                    edge_s2 = pygame.Surface((10, 1), pygame.SRCALPHA)
+                    edge_s2.fill((*ROAD_EDGE_COLOR[:3], 15))
+                    screen.blit(edge_s2, (left - 5, y))
+                    screen.blit(edge_s2, (right - 5, y))
 
             # Rumble strips on outside of curves
             if seg.rumble_side and seg.seg_type not in (SEG_STRAIGHT,):
@@ -582,3 +661,72 @@ class MicroMachinesBG:
                         pygame.draw.line(screen, (*hl_color[:3],), (left - 4, y), (left - 3, y), 1)
                     if seg.rumble_side in ("right", "both"):
                         pygame.draw.line(screen, (*hl_color[:3],), (right + 3, y), (right + 4, y), 1)
+
+    def _draw_v3_overlay(self, screen):
+        """V3 holographic overlay: grid blit per road segment, data wave sweeps."""
+        # Holo grid tile blit over each visible road segment
+        if hasattr(self, '_holo_tile'):
+            tile_h = self._holo_tile.get_height()
+            tile_w = self._holo_tile.get_width()
+            for seg in self.segments:
+                sy_start = seg.y_start - self.scroll_offset
+                sy_end = seg.y_end - self.scroll_offset
+                if sy_end < 0 or sy_start > SCREEN_HEIGHT:
+                    continue
+                # Blit grid tile at segment midpoint
+                mid_t = 0.5
+                cx = seg.get_center_x(mid_t)
+                mid_y = (sy_start + sy_end) / 2
+                left = int(cx - HALF_TRACK)
+                for ty in range(max(0, int(sy_start)), min(SCREEN_HEIGHT, int(sy_end)), tile_h):
+                    lt = (ty - sy_start) / max(1, sy_end - sy_start)
+                    lt = max(0.0, min(1.0, lt))
+                    seg_cx = seg.get_center_x(lt)
+                    seg_left = int(seg_cx - HALF_TRACK)
+                    # Clip to road width
+                    clip_w = min(tile_w, TRACK_WIDTH)
+                    screen.blit(self._holo_tile, (seg_left, ty),
+                                (0, 0, clip_w, min(tile_h, int(sy_end) - ty)),
+                                special_flags=pygame.BLEND_RGB_ADD)
+
+        # Data wave sweeps (max 3 active, horizontal bright lines)
+        if hasattr(self, '_data_waves'):
+            self._data_wave_cooldown = max(0, self._data_wave_cooldown - 1)
+            if len(self._data_waves) < 3 and random.random() < 0.01 and self._data_wave_cooldown <= 0:
+                self._data_waves.append({
+                    'y': -5,
+                    'speed': random.uniform(3, 6),
+                    'color': random.choice([(0, 200, 255), (0, 255, 180), (100, 200, 255)]),
+                })
+                self._data_wave_cooldown = 60
+
+            alive_waves = []
+            for wave in self._data_waves:
+                wave['y'] += wave['speed']
+                if wave['y'] < SCREEN_HEIGHT:
+                    alive_waves.append(wave)
+                    wy = int(wave['y'])
+                    # Draw sweep line across all visible road segments
+                    for seg in self.segments:
+                        sy_start = seg.y_start - self.scroll_offset
+                        sy_end = seg.y_end - self.scroll_offset
+                        if sy_start <= wy <= sy_end and seg.length > 0:
+                            lt = (wy - sy_start) / max(1, sy_end - sy_start)
+                            lt = max(0.0, min(1.0, lt))
+                            seg_cx = seg.get_center_x(lt)
+                            left = int(seg_cx - HALF_TRACK)
+                            right = int(seg_cx + HALF_TRACK)
+                            pygame.draw.line(screen, wave['color'], (left, wy), (right, wy), 2)
+                            # Fainter echo lines
+                            for offset in [2, 4]:
+                                a_line = max(0, wy - offset)
+                                if a_line >= 0:
+                                    pygame.draw.line(screen, (*wave['color'][:3],),
+                                                     (left, a_line), (right, a_line), 1)
+                            break
+            self._data_waves = alive_waves
+
+        # Subtle V3 atmosphere (no fog — just faint haze)
+        if hasattr(self, '_haze_surf'):
+            self._haze_surf.fill((0, 8, 12, 6))
+            screen.blit(self._haze_surf, (0, 0))
