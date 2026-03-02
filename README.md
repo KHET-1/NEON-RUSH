@@ -24,6 +24,12 @@
   <b>Desert Velocity</b> (vertical) → <b>Excitebike</b> (side-scroll) → <b>Micro Machines</b> (top-down) → <b>Victory</b>
 </p>
 
+<p align="center">
+  <img src="assets/gameplay_preview.gif" alt="NEON RUSH Gameplay" width="600">
+  <br>
+  <sub><a href="assets/neon_rush_demo.mp4">Watch full 60s demo video</a></sub>
+</p>
+
 ---
 
 ## What Is This?
@@ -60,14 +66,7 @@ That's it. No asset downloads, no build step, no configuration.
 
 ### Mode 1: Desert Velocity — Vertical Racer
 
-```
-        ╔═══════════╗
-        ║  ▼ ▼  ▼   ║  Obstacles fall from above
-        ║    ◊       ║  Coins scattered on the road
-        ║  ☀         ║  Solar flares = environmental weapon
-        ║     ▲      ║  YOU — dodge, collect, survive
-        ╚═══════════╝
-```
+<img src="assets/screenshot_desert.png" alt="Desert Velocity" width="500">
 
 - Classic top-down vertical scrolling
 - **Leap dodge:** double-tap left/right for an instant 90px dash
@@ -76,15 +75,7 @@ That's it. No asset downloads, no build step, no configuration.
 
 ### Mode 2: Excitebike — Side-Scroll Lanes
 
-```
-     ════════════════════════════
-     Lane 1   [▲ ramp]   ═══▶
-     ───────────────────────────
-     Lane 2   ◆ YOU      ═══▶
-     ───────────────────────────
-     Lane 3   ░░ mud ░░   ═══▶
-     ════════════════════════════
-```
+<img src="assets/screenshot_excitebike.png" alt="Excitebike" width="500">
 
 - 3-lane system with smooth transitions
 - **Ramps** launch you airborne — skip obstacles and deal boss damage
@@ -93,14 +84,7 @@ That's it. No asset downloads, no build step, no configuration.
 
 ### Mode 3: Micro Machines — Top-Down Free-Roam
 
-```
-        ┌─────────────────┐
-        │  ○ oil slick     │
-        │        ◆ YOU     │  Full 360° movement
-        │   ●  ●           │  Steering + drift physics
-        │      tiny cars   │  Oil slicks deflect you
-        └─────────────────┘
-```
+<img src="assets/screenshot_micro.png" alt="Micro Machines" width="500">
 
 - True 2D movement with rotation-based steering
 - **Drift mechanic:** turning at speed generates extra heat
