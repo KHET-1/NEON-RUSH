@@ -909,10 +909,18 @@ class ExcitebikeBoss(Boss):
         self.image = self._create_surface()
 
     def _update_movement(self, players, dt=1):
-        """Sinusoidal bobbing on the right side. Drift lower when vulnerable."""
+        """Sinusoidal bobbing with lane targeting toward player."""
         self.bob_offset += 0.03 * self.current_phase.speed_mult
 
         target_y = self.base_y + math.sin(self.bob_offset) * 60
+
+        # Lane targeting: bias toward player's Y position (more aggressive in later phases)
+        alive = [p for p in players if p.alive]
+        if alive and not self.vulnerable:
+            player_y = alive[0].rect.centery
+            lane_bias = (player_y - target_y) * (0.15 + self.current_phase_idx * 0.1)
+            target_y += lane_bias
+
         if self.vulnerable:
             # Drift lower to make ramming easier
             target_y = SCREEN_HEIGHT - 140 + math.sin(self.bob_offset * 0.5) * 20

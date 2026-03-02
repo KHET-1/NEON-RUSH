@@ -227,9 +227,15 @@ class OilSlickDrop(AttackPattern):
         # Drop oil at scheduled times
         while self.drop_times and self.timer >= self.drop_times[0]:
             self.drop_times.pop(0)
-            # Drop behind the boss
+            # Drop on-track near the boss
             ox = boss.rect.centerx + random.randint(-30, 30)
             oy = boss.rect.centery + random.randint(-20, 20)
+            # Clamp to track bounds if track_bg available
+            if hasattr(boss, 'track_bg') and boss.track_bg:
+                world_y = oy + boss.track_bg.scroll_offset_value
+                bounds = boss.track_bg.get_track_bounds_at_world_y(world_y)
+                if bounds:
+                    ox = max(int(bounds[0]) + 10, min(int(bounds[2]) - 10, ox))
             ox = max(20, min(SCREEN_WIDTH - 20, ox))
             oy = max(20, min(SCREEN_HEIGHT - 20, oy))
             slick = OilSlick(ox, oy)
@@ -858,8 +864,9 @@ class MicroMachinesBoss(Boss):
     PATH_MARGIN = 50
     PATH_CORNER_RADIUS = 80
 
-    def __init__(self, particles, shake=None, evolution_tier=1):
+    def __init__(self, particles, shake=None, evolution_tier=1, track_bg=None):
         self.shake = shake
+        self.track_bg = track_bg  # Track background for track-aware movement
         evo_scale = 1.0 + (evolution_tier - 1) * 0.3
         self.MAX_HP = int(350 * evo_scale)
         self.path_t = 0.0  # parametric position along path [0..1)
@@ -868,6 +875,7 @@ class MicroMachinesBoss(Boss):
         self.underglow_pulse = 0
         self.tire_rot = 0.0
         self.oil_slicks = []  # persistent oil slicks from attacks
+        self._on_curve = False  # True when boss is on a sharp curve (vulnerability)
         super().__init__(SCREEN_WIDTH // 2, self.PATH_MARGIN, particles, tier=evolution_tier)
 
     def _build_phases(self):
@@ -1049,13 +1057,46 @@ class MicroMachinesBoss(Boss):
         return surf
 
     def _get_path_position(self, t):
-        """Calculate (x, y) position along the rounded rectangular patrol path.
+        """Calculate (x, y) position along the patrol path.
 
-        t ranges from 0 to 1, traversing the path clockwise:
-          0.00 - 0.25: top edge (left to right)
-          0.25 - 0.50: right edge (top to bottom)
-          0.50 - 0.75: bottom edge (right to left)
-          0.75 - 1.00: left edge (bottom to top)
+        When track_bg is available: boss follows track center near top of screen,
+        weaving side-to-side on straights. Falls back to rounded rectangle patrol.
+        """
+        if self.track_bg:
+            return self._get_track_path_position(t)
+        return self._get_rect_path_position(t)
+
+    def _get_track_path_position(self, t):
+        """Boss position on-track: follows track center at top portion of screen.
+
+        Uses t to create a weaving motion around track center.
+        """
+        # Boss stays near top 20-30% of screen
+        screen_y = SCREEN_HEIGHT * (0.15 + 0.1 * math.sin(t * 2 * math.pi))
+        world_y = self.track_bg.scroll_offset_value + screen_y
+        bounds = self.track_bg.get_track_bounds_at_world_y(world_y)
+        if bounds is None:
+            return (SCREEN_WIDTH // 2, int(screen_y))
+
+        left, center_x, right = bounds
+        # Weave side-to-side within track bounds
+        weave = math.sin(t * 6 * math.pi) * (right - left) * 0.25
+        x = max(left + 50, min(right - 50, center_x + weave))
+
+        # Detect if on a curve (for vulnerability mechanic)
+        ahead_bounds = self.track_bg.get_track_bounds_at_world_y(world_y + 50)
+        if ahead_bounds:
+            curve_diff = abs(ahead_bounds[1] - center_x)
+            self._on_curve = curve_diff > 15
+        else:
+            self._on_curve = False
+
+        return (x, int(screen_y))
+
+    def _get_rect_path_position(self, t):
+        """Original rounded rectangular patrol path (fallback).
+
+        t ranges from 0 to 1, traversing the path clockwise.
         """
         m = self.PATH_MARGIN
         cr = self.PATH_CORNER_RADIUS
@@ -1094,42 +1135,36 @@ class MicroMachinesBoss(Boss):
         frac = d / max(1, segments[seg_idx])
 
         if seg_idx == 0:
-            # Top straight: left to right
             return (m + cr + frac * straight_w, m)
         elif seg_idx == 1:
-            # Top-right corner
             angle = -math.pi / 2 + frac * (math.pi / 2)
             return (m + w - cr + math.cos(angle) * cr,
                     m + cr + math.sin(angle) * cr)
         elif seg_idx == 2:
-            # Right straight: top to bottom
             return (m + w, m + cr + frac * straight_h)
         elif seg_idx == 3:
-            # Bottom-right corner
             angle = 0 + frac * (math.pi / 2)
             return (m + w - cr + math.cos(angle) * cr,
                     m + h - cr + math.sin(angle) * cr)
         elif seg_idx == 4:
-            # Bottom straight: right to left
             return (m + w - cr - frac * straight_w, m + h)
         elif seg_idx == 5:
-            # Bottom-left corner
             angle = math.pi / 2 + frac * (math.pi / 2)
             return (m + cr + math.cos(angle) * cr,
                     m + h - cr + math.sin(angle) * cr)
         elif seg_idx == 6:
-            # Left straight: bottom to top
             return (m, m + h - cr - frac * straight_h)
         else:
-            # Top-left corner
             angle = math.pi + frac * (math.pi / 2)
             return (m + cr + math.cos(angle) * cr,
                     m + cr + math.sin(angle) * cr)
 
     def _update_movement(self, players, dt=1):
-        """Move along rounded rectangular path. Slow to 0.4x during vulnerability."""
+        """Move along patrol path. Slow on curves and during vulnerability."""
         vuln_mult = 0.4 if self.vulnerable else 1.0
-        speed = self.path_speed * self.current_phase.speed_mult * vuln_mult
+        # Slow down on curves (creates vulnerability windows)
+        curve_mult = 0.5 if self._on_curve else 1.0
+        speed = self.path_speed * self.current_phase.speed_mult * vuln_mult * curve_mult
         old_x, old_y = self.rect.centerx, self.rect.centery
         self.path_t = (self.path_t + speed) % 1.0
         new_x, new_y = self._get_path_position(self.path_t)

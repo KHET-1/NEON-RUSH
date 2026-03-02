@@ -58,6 +58,7 @@ class MicroPlayer(pygame.sprite.Sprite):
 
         self.angle = -math.pi / 2  # Facing up
         self.speed = 0.0
+        self.max_speed = 12
         self.px = float(SCREEN_WIDTH // 2)
         self.py = float(SCREEN_HEIGHT // 2 + 100)
         self.heat = 0.0
@@ -103,85 +104,100 @@ class MicroPlayer(pygame.sprite.Sprite):
         self.fire_cooldown = 0
         self.vel_y = 0  # Compatibility
 
+        # Tiered boost system
+        self.boost_timer = 0
+        self.boost_power = 0
+        self.boost_cooldown = 0
+
+        # Track constraint + spinout
+        self.track_bg = None  # Set by mode in setup()
+        self.spinout_timer = 0
+        self.spinout_dir = 0  # +1 or -1
+
         from core.ui import ComboTracker
         self.combo = ComboTracker()
 
     def _make_car(self):
-        surf = pygame.Surface((20, 28), pygame.SRCALPHA)
-        # Body
-        pygame.draw.rect(surf, self.color_main, (3, 2, 14, 24), border_radius=3)
+        surf = pygame.Surface((28, 40), pygame.SRCALPHA)
+        # Body (slightly rounded)
+        pygame.draw.rect(surf, self.color_main, (4, 3, 20, 34), border_radius=4)
         # Windshield
-        pygame.draw.rect(surf, (*self.color_accent, 150), (5, 3, 10, 8), border_radius=2)
-        # Rear
-        pygame.draw.rect(surf, (200, 80, 30), (5, 22, 10, 4))
-        # Wheels
-        for wx in [1, 17]:
-            pygame.draw.rect(surf, (50, 50, 50), (wx, 5, 3, 6))
-            pygame.draw.rect(surf, (50, 50, 50), (wx, 19, 3, 6))
+        pygame.draw.rect(surf, (*self.color_accent, 150), (7, 4, 14, 11), border_radius=3)
+        # Rear section
+        pygame.draw.rect(surf, (200, 80, 30), (7, 31, 14, 6))
+        # Brake lights
+        pygame.draw.rect(surf, (255, 50, 30), (8, 32, 4, 3))
+        pygame.draw.rect(surf, (255, 50, 30), (16, 32, 4, 3))
+        # Wheels with visible gaps
+        for wx in [1, 24]:
+            pygame.draw.rect(surf, (40, 40, 40), (wx, 7, 4, 9))
+            pygame.draw.rect(surf, (40, 40, 40), (wx, 27, 4, 9))
+            # Wheel gap (dark line between wheel and body)
+            pygame.draw.rect(surf, (20, 20, 20), (wx, 16, 4, 1))
         return surf
 
     def _make_car_v2(self):
         """V2+ car with underglow, detail shading, windshield glint, exhaust glow."""
-        surf = pygame.Surface((24, 32), pygame.SRCALPHA)
+        surf = pygame.Surface((34, 46), pygame.SRCALPHA)
         # Underglow ellipse
-        pygame.draw.ellipse(surf, (*self.color_accent, 35), (2, 6, 20, 24))
+        pygame.draw.ellipse(surf, (*self.color_accent, 35), (3, 9, 28, 34))
         # Body
-        pygame.draw.rect(surf, self.color_main, (4, 2, 16, 28), border_radius=4)
+        pygame.draw.rect(surf, self.color_main, (6, 3, 22, 40), border_radius=5)
         # Side shading
         side_dark = tuple(max(0, c - 40) for c in self.color_main)
-        pygame.draw.rect(surf, side_dark, (4, 2, 3, 28), border_radius=2)
-        pygame.draw.rect(surf, side_dark, (17, 2, 3, 28), border_radius=2)
+        pygame.draw.rect(surf, side_dark, (6, 3, 4, 40), border_radius=2)
+        pygame.draw.rect(surf, side_dark, (24, 3, 4, 40), border_radius=2)
         # Windshield with glint
-        pygame.draw.rect(surf, (*self.color_accent, 160), (6, 3, 12, 10), border_radius=2)
-        pygame.draw.line(surf, (255, 255, 255), (7, 4), (16, 4), 1)
+        pygame.draw.rect(surf, (*self.color_accent, 160), (9, 4, 16, 14), border_radius=3)
+        pygame.draw.line(surf, (255, 255, 255), (10, 6), (23, 6), 1)
         # Rear exhaust glow
-        pygame.draw.rect(surf, (255, 120, 40, 120), (6, 26, 12, 4))
-        pygame.draw.rect(surf, (255, 200, 100, 80), (8, 27, 8, 2))
+        pygame.draw.rect(surf, (255, 120, 40, 120), (9, 37, 16, 6))
+        pygame.draw.rect(surf, (255, 200, 100, 80), (11, 39, 12, 3))
         # Wheels (with highlights)
-        for wx in [1, 20]:
-            pygame.draw.rect(surf, (40, 40, 40), (wx, 5, 3, 7))
-            pygame.draw.rect(surf, (40, 40, 40), (wx, 21, 3, 7))
-            pygame.draw.rect(surf, (70, 70, 70), (wx, 6, 3, 2))
-            pygame.draw.rect(surf, (70, 70, 70), (wx, 22, 3, 2))
+        for wx in [1, 29]:
+            pygame.draw.rect(surf, (40, 40, 40), (wx, 7, 4, 10))
+            pygame.draw.rect(surf, (40, 40, 40), (wx, 30, 4, 10))
+            pygame.draw.rect(surf, (70, 70, 70), (wx, 9, 4, 3))
+            pygame.draw.rect(surf, (70, 70, 70), (wx, 32, 4, 3))
         return surf
 
     def _make_car_v3(self):
         """V3 car: 3-tone body, holographic windshield, neon wheel rims, power stripe."""
-        surf = pygame.Surface((28, 36), pygame.SRCALPHA)
+        surf = pygame.Surface((40, 52), pygame.SRCALPHA)
         # 3-layer underglow
-        for ew, eh, a in [(24, 28, 20), (20, 24, 35), (16, 20, 50)]:
+        for ew, eh, a in [(34, 40, 20), (29, 34, 35), (23, 29, 50)]:
             pygame.draw.ellipse(surf, (*self.color_accent, a),
-                                (14 - ew // 2, 8, ew, eh))
+                                (20 - ew // 2, 11, ew, eh))
         # Body — 3-tone shading
         dark = tuple(max(0, c - 50) for c in self.color_main)
         light = tuple(min(255, c + 30) for c in self.color_main)
-        pygame.draw.rect(surf, self.color_main, (5, 2, 18, 32), border_radius=4)
+        pygame.draw.rect(surf, self.color_main, (7, 3, 26, 46), border_radius=6)
         # Left dark panel
-        pygame.draw.rect(surf, dark, (5, 2, 4, 32), border_radius=2)
+        pygame.draw.rect(surf, dark, (7, 3, 6, 46), border_radius=3)
         # Right dark panel
-        pygame.draw.rect(surf, dark, (19, 2, 4, 32), border_radius=2)
+        pygame.draw.rect(surf, dark, (27, 3, 6, 46), border_radius=3)
         # Center highlight
-        pygame.draw.rect(surf, light, (12, 4, 4, 28))
+        pygame.draw.rect(surf, light, (17, 6, 6, 40))
         # Holographic cyan windshield with scan line
-        pygame.draw.rect(surf, (0, 220, 200, 180), (7, 3, 14, 12), border_radius=2)
+        pygame.draw.rect(surf, (0, 220, 200, 180), (10, 4, 20, 17), border_radius=3)
         # Moving scan line effect (static for sprite — baked mid-position)
-        pygame.draw.line(surf, (0, 255, 255), (8, 8), (20, 8), 1)
-        pygame.draw.line(surf, (255, 255, 255), (8, 4), (18, 4), 1)
+        pygame.draw.line(surf, (0, 255, 255), (11, 12), (29, 12), 1)
+        pygame.draw.line(surf, (255, 255, 255), (11, 6), (26, 6), 1)
         # Neon wheel rims
-        for wx in [2, 23]:
-            pygame.draw.rect(surf, (30, 30, 35), (wx, 6, 3, 8))
-            pygame.draw.rect(surf, (30, 30, 35), (wx, 24, 3, 8))
+        for wx in [3, 33]:
+            pygame.draw.rect(surf, (30, 30, 35), (wx, 9, 4, 11))
+            pygame.draw.rect(surf, (30, 30, 35), (wx, 35, 4, 11))
             # Neon rim lines
-            pygame.draw.rect(surf, self.color_accent, (wx, 6, 3, 1))
-            pygame.draw.rect(surf, self.color_accent, (wx, 13, 3, 1))
-            pygame.draw.rect(surf, self.color_accent, (wx, 24, 3, 1))
-            pygame.draw.rect(surf, self.color_accent, (wx, 31, 3, 1))
+            pygame.draw.rect(surf, self.color_accent, (wx, 9, 4, 1))
+            pygame.draw.rect(surf, self.color_accent, (wx, 19, 4, 1))
+            pygame.draw.rect(surf, self.color_accent, (wx, 35, 4, 1))
+            pygame.draw.rect(surf, self.color_accent, (wx, 45, 4, 1))
         # Central power stripe
-        pygame.draw.line(surf, self.color_accent, (14, 4), (14, 30), 1)
+        pygame.draw.line(surf, self.color_accent, (20, 6), (20, 43), 1)
         # Rear exhaust (3-layer)
-        pygame.draw.rect(surf, (255, 100, 30, 140), (7, 30, 14, 4))
-        pygame.draw.rect(surf, (255, 180, 80, 100), (9, 31, 10, 2))
-        pygame.draw.rect(surf, (255, 220, 140, 60), (11, 31, 6, 1))
+        pygame.draw.rect(surf, (255, 100, 30, 140), (10, 43, 20, 6))
+        pygame.draw.rect(surf, (255, 180, 80, 100), (13, 45, 14, 3))
+        pygame.draw.rect(surf, (255, 220, 140, 60), (16, 46, 8, 2))
         return surf
 
     def _any_key(self, keys, key_list):
@@ -213,19 +229,27 @@ class MicroPlayer(pygame.sprite.Sprite):
         if self.fire_cooldown > 0:
             self.fire_cooldown -= 1
 
-        # Steering
+        # --- Spinout handling (cannot steer during spinout) ---
+        in_spinout = self.spinout_timer > 0
+        if in_spinout:
+            self.spinout_timer -= 1
+            self.angle += 0.15 * self.spinout_dir
+            self.speed *= 0.95
+
+        # Steering (disabled during spinout)
         turn_speed = 0.065
         turning = False
-        if self._any_key(keys, self.key_left):
-            self.angle -= turn_speed
-            turning = True
-        if self._any_key(keys, self.key_right):
-            self.angle += turn_speed
-            turning = True
+        if not in_spinout:
+            if self._any_key(keys, self.key_left):
+                self.angle -= turn_speed
+                turning = True
+            if self._any_key(keys, self.key_right):
+                self.angle += turn_speed
+                turning = True
 
         # Accel/brake
         if self._any_key(keys, self.key_up):
-            self.speed = min(self.speed + 0.26, 8)
+            self.speed = min(self.speed + 0.3, 12)
             self.heat += 0.8
         if self._any_key(keys, self.key_down):
             self.speed = max(self.speed - 0.4, -2.6)
@@ -233,37 +257,90 @@ class MicroPlayer(pygame.sprite.Sprite):
         # Drift builds heat when turning at speed
         if turning and self.speed > 2:
             self.heat += 1.5
+            # Drift enhancement: more slide at high speed
+            if abs(self.speed) > 5:
+                self.heat += 0.5
 
-        # Boost
-        if self._any_key(keys, self.key_boost) and self.heat > 50:
-            self.speed += 4
-            self.heat = 0
-            from core.sound import play_sfx
-            play_sfx("boost")
+        # Tiered boost system
+        boost_pressed = self._any_key(keys, self.key_boost)
+        if boost_pressed and self.boost_cooldown <= 0 and self.boost_timer <= 0:
+            from core.sound import play_sfx as _play_sfx
+            if self.heat >= 100:
+                # Tier 3: Ghost Surge
+                self.heat = 0
+                self.boost_timer = 90
+                self.boost_power = 10
+                self.ghost_mode = True
+                self.ghost_timer = 90
+                self.invincible_timer = max(self.invincible_timer, 90)
+                self.boost_cooldown = 18
+                _play_sfx("boost")
+            elif self.heat >= 60:
+                # Tier 2: Power Boost
+                self.heat -= 60
+                self.boost_timer = 54
+                self.boost_power = 6
+                self.invincible_timer = max(self.invincible_timer, 18)
+                self.boost_cooldown = 18
+                _play_sfx("boost")
+            elif self.heat >= 30:
+                # Tier 1: Quick Boost
+                self.heat -= 30
+                self.boost_timer = 36
+                self.boost_power = 3
+                self.boost_cooldown = 18
+                _play_sfx("boost")
 
-        # Ghost mode
-        if self.heat > 100:
-            self.ghost_mode = True
-            self.ghost_timer = 180
-            self.heat = 0
+        if self.boost_timer > 0:
+            self.speed = min(self.speed + self.boost_power * 0.15, self.max_speed + self.boost_power)
+            self.boost_timer -= 1
+        if self.boost_cooldown > 0:
+            self.boost_cooldown -= 1
+
         if self.ghost_mode:
             self.ghost_timer -= 1
             if self.ghost_timer <= 0:
                 self.ghost_mode = False
 
         self.heat = max(0, self.heat - 0.3)
-        self.speed *= 0.98  # Friction
+        # Drift enhancement: less friction when turning at high speed
+        friction = 0.96 if (turning and abs(self.speed) > 5) else 0.98
+        self.speed *= friction
+
+        # Combo momentum: speed bonus from active combo, penalty on drop
+        self.speed += self.combo.speed_bonus
+        if self.combo.drop_penalty > 0:
+            self.speed *= 0.85
 
         # Move
         self.px += math.cos(self.angle) * self.speed
         self.py += math.sin(self.angle) * self.speed
 
-        # Keep on screen
+        # --- Track wall constraint ---
+        if self.track_bg is not None:
+            world_y = self.py + self.track_bg.scroll_offset_value
+            bounds = self.track_bg.get_track_bounds_at_world_y(world_y)
+            if bounds is not None:
+                left, _center, right = bounds
+                wall_margin = 10
+                if self.px < left + wall_margin:
+                    self.px = left + wall_margin
+                    # Wall bounce
+                    self.speed *= -0.3
+                    self.angle = math.pi - self.angle  # Reflect horizontally
+                    self.heat += 15
+                elif self.px > right - wall_margin:
+                    self.px = right - wall_margin
+                    self.speed *= -0.3
+                    self.angle = math.pi - self.angle
+                    self.heat += 15
+
+        # Keep on screen (fallback, should rarely trigger with track constraint)
         self.px = max(20, min(SCREEN_WIDTH - 20, self.px))
         self.py = max(20, min(SCREEN_HEIGHT - 20, self.py))
 
         self.distance += abs(self.speed) * 0.01
-        self.score += int(abs(self.speed) * 0.3 * self.score_mult)
+        self.score += int(abs(self.speed) * 0.3 * self.score_mult * getattr(self, 'speed_mult_factor', 1.0))
 
         # Rotate image
         deg = -math.degrees(self.angle) - 90
@@ -430,29 +507,73 @@ class TrackBarrier(pygame.sprite.Sprite):
 
 
 class TinyCar(pygame.sprite.Sprite):
-    """AI opponent car in top-down view."""
-    def __init__(self, x, y):
+    """AI opponent car in top-down view — follows track center."""
+    def __init__(self, x, y, direction='same', track_bg=None):
         super().__init__()
-        self.image = pygame.Surface((16, 22), pygame.SRCALPHA)
-        color = random.choice([(200, 80, 80), (80, 200, 80), (200, 200, 80), (80, 80, 200)])
-        pygame.draw.rect(self.image, color, (2, 1, 12, 20), border_radius=3)
-        pygame.draw.rect(self.image, (50, 50, 50), (0, 4, 3, 5))
-        pygame.draw.rect(self.image, (50, 50, 50), (13, 4, 3, 5))
-        pygame.draw.rect(self.image, (50, 50, 50), (0, 14, 3, 5))
-        pygame.draw.rect(self.image, (50, 50, 50), (13, 14, 3, 5))
+        self.direction = direction  # 'same' = slower ahead, 'oncoming' = head-on
+        self.track_bg = track_bg
+        self.own_speed = random.uniform(1.0, 3.0)
+        self.car_angle = 0.0  # facing angle for sprite rotation
+        self.lateral_wander = random.uniform(-15, 15)
+        self.wander_phase = random.uniform(0, math.pi * 2)
+
+        # Build base sprite
+        self.color = random.choice([(200, 80, 80), (80, 200, 80), (200, 200, 80), (80, 80, 200)])
+        self.base_surf = pygame.Surface((16, 22), pygame.SRCALPHA)
+        pygame.draw.rect(self.base_surf, self.color, (2, 1, 12, 20), border_radius=3)
+        pygame.draw.rect(self.base_surf, (50, 50, 50), (0, 4, 3, 5))
+        pygame.draw.rect(self.base_surf, (50, 50, 50), (13, 4, 3, 5))
+        pygame.draw.rect(self.base_surf, (50, 50, 50), (0, 14, 3, 5))
+        pygame.draw.rect(self.base_surf, (50, 50, 50), (13, 14, 3, 5))
+        self.image = self.base_surf.copy()
         self.rect = self.image.get_rect(center=(x, y))
-        self.own_speed = random.uniform(0.5, 2)
+
+        # Track world_y for track queries
+        self.world_y = y + (track_bg.scroll_offset_value if track_bg else 0)
 
     def update(self, scroll_speed):
-        self.rect.y += scroll_speed - self.own_speed
-        if self.rect.top > SCREEN_HEIGHT + 50 or self.rect.bottom < -50:
+        # Advance world position
+        if self.direction == 'same':
+            self.world_y += scroll_speed - self.own_speed
+        else:
+            self.world_y += scroll_speed + self.own_speed
+
+        # Steer toward track center with wander
+        if self.track_bg:
+            center = self.track_bg.get_track_center_ahead(self.world_y, 50)
+            self.wander_phase += 0.02
+            target_x = center + self.lateral_wander * math.sin(self.wander_phase)
+            # Steer laterally
+            dx = target_x - self.rect.centerx
+            steer = max(-2.0, min(2.0, dx * 0.08))
+            self.rect.x += int(steer)
+            # Compute facing angle for rotation
+            self.car_angle = math.atan2(scroll_speed - self.own_speed, steer) if self.direction == 'same' else math.atan2(-(scroll_speed + self.own_speed), steer)
+
+        # Update screen position from world_y
+        screen_y = self.world_y - (self.track_bg.scroll_offset_value if self.track_bg else 0)
+        self.rect.centery = int(screen_y)
+
+        # Rotate sprite to face direction
+        if self.direction == 'oncoming':
+            deg = 180  # Facing player (down)
+        else:
+            deg = 0  # Facing up (same direction)
+        # Add slight steering rotation
+        if self.track_bg:
+            deg += max(-15, min(15, -self.car_angle * 10))
+        self.image = pygame.transform.rotate(self.base_surf, deg)
+        self.rect = self.image.get_rect(center=self.rect.center)
+
+        if self.rect.top > SCREEN_HEIGHT + 50 or self.rect.bottom < -80:
             self.kill()
 
 
 class MicroCoin(pygame.sprite.Sprite):
-    def __init__(self, x, y):
+    def __init__(self, x, y, hazard=False):
         super().__init__()
         self.pulse = random.randint(0, 60)
+        self.hazard = hazard
         self.image = pygame.Surface((18, 18), pygame.SRCALPHA)
         self._draw()
         self.rect = self.image.get_rect(center=(x, y))
@@ -460,6 +581,13 @@ class MicroCoin(pygame.sprite.Sprite):
     def _draw(self):
         self.image.fill((0, 0, 0, 0))
         p = 0.75 + 0.25 * math.sin(self.pulse * 0.12)
+        if self.hazard:
+            pulse_r = int(8 + 1.5 * math.sin(self.pulse * 0.15))
+            pygame.draw.circle(self.image, (255, 140, 0, int(50 * p)), (9, 9), pulse_r)
+            pygame.draw.circle(self.image, (255, 140, 0), (9, 9), 6)
+            pygame.draw.circle(self.image, (255, 200, 80), (9, 9), 3)
+            pygame.draw.circle(self.image, (255, 140, 0, int(120 * p)), (9, 9), 8, 2)
+            return
         pygame.draw.circle(self.image, (*COIN_GOLD, int(60 * p)), (9, 9), 8)
         pygame.draw.circle(self.image, COIN_GOLD, (9, 9), 6)
 

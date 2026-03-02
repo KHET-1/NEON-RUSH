@@ -233,6 +233,7 @@ class Player(pygame.sprite.Sprite):
         self.rect = self.image.get_rect(center=(start_x, SCREEN_HEIGHT - 60))
 
         self.speed = 0.0
+        self.max_speed = 16
         self.heat = 0.0
         self.ghost_mode = False
         self.ghost_timer = 0
@@ -284,6 +285,11 @@ class Player(pygame.sprite.Sprite):
         self.FIRE_COOLDOWN_FRAMES = 30
         self.HEAT_COST = 40
 
+        # Tiered boost system
+        self.boost_timer = 0
+        self.boost_power = 0
+        self.boost_cooldown = 0
+
     def on_direction_tap(self, direction, now_ms, is_new_press):
         if not self.alive or not is_new_press or self.leap_cooldown > 0:
             return
@@ -332,8 +338,8 @@ class Player(pygame.sprite.Sprite):
             r_left, r_right = road_geometry.get_road_bounds_at_bottom()
             bound_left = int(r_left) + 5
             bound_right = int(r_right) - self.rect.width - 5
-            # Strong curve drift — car follows road curves
-            curve_force = road_geometry.current_curve * 2.5
+            # Strong curve drift — car follows road curves (3.5x for dramatic feel)
+            curve_force = road_geometry.current_curve * 3.5
 
             # Track road center — smoothly pull car toward road center
             bottom_sd = road_geometry.scanline_data[-1]
@@ -419,20 +425,47 @@ class Player(pygame.sprite.Sprite):
             target_bottom = int(getattr(self, '_road_y_smooth', SCREEN_HEIGHT - 30))
             self.rect.bottom = target_bottom
 
-        if self.heat > 100:
-            self.ghost_mode = True
-            self.ghost_timer = 180
-            self.heat = 0
+        # Tiered boost system
+        boost_pressed = self._any_key(keys, self.keys_boost)
+        if boost_pressed and self.boost_cooldown <= 0 and self.boost_timer <= 0:
+            if self.heat >= 100:
+                # Tier 3: Ghost Surge — all-in
+                self.heat = 0
+                self.boost_timer = 90
+                self.boost_power = 10
+                self.ghost_mode = True
+                self.ghost_timer = 90
+                self.invincible_timer = max(self.invincible_timer, 90)
+                self.boost_cooldown = 18
+                play_sfx("boost")
+            elif self.heat >= 60:
+                # Tier 2: Power Boost — medium cost, brief invincibility
+                self.heat -= 60
+                self.boost_timer = 54
+                self.boost_power = 6
+                self.invincible_timer = max(self.invincible_timer, 18)
+                self.boost_cooldown = 18
+                play_sfx("boost")
+            elif self.heat >= 30:
+                # Tier 1: Quick Boost — cheap
+                self.heat -= 30
+                self.boost_timer = 36
+                self.boost_power = 3
+                self.boost_cooldown = 18
+                play_sfx("boost")
+
+        if self.boost_timer > 0:
+            self.speed = min(self.speed + self.boost_power * 0.15, self.max_speed + self.boost_power)
+            self.boost_timer -= 1
+        if self.boost_cooldown > 0:
+            self.boost_cooldown -= 1
+
         if self.ghost_mode:
             self.image = self.ghost_image.copy()
             self.ghost_timer -= 1
             if self.ghost_timer <= 0:
                 self.ghost_mode = False
                 self.image = self.base_image.copy()
-        elif self._any_key(keys, self.keys_boost) and self.heat > 50:
-            self.speed += 5
-            self.heat = 0
-            play_sfx("boost")
 
         if self.flare_boost_timer > 0:
             self.flare_boost_timer -= 1
@@ -440,9 +473,14 @@ class Player(pygame.sprite.Sprite):
         else:
             self.speed = max(self.speed - 0.2, 0)
 
+        # Combo momentum: speed bonus from active combo, penalty on drop
+        self.speed += self.combo.speed_bonus
+        if self.combo.drop_penalty > 0:
+            self.speed *= 0.85
+
         self.heat = max(0, self.heat - 0.4)
         self.distance += self.speed * 0.01
-        self.score += int(self.speed * 0.5 * self.score_mult)
+        self.score += int(self.speed * 0.5 * self.score_mult * getattr(self, 'speed_mult_factor', 1.0))
 
         if self.invincible_timer > 0:
             self.invincible_timer -= 1

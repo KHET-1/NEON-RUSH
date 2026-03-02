@@ -16,13 +16,18 @@ class Ramp(pygame.sprite.Sprite):
     def __init__(self, x, lane_y):
         super().__init__()
         self.image = pygame.Surface((50, 30), pygame.SRCALPHA)
-        # Draw ramp shape
+        # Draw ramp shape (brighter orange/yellow)
         pts = [(0, 30), (50, 30), (50, 5), (10, 25)]
-        pygame.draw.polygon(self.image, (180, 140, 60), pts)
+        pygame.draw.polygon(self.image, (220, 170, 40), pts)
         pygame.draw.polygon(self.image, SOLAR_YELLOW, pts, 2)
-        # Arrow
-        pygame.draw.line(self.image, NEON_CYAN, (25, 25), (40, 10), 2)
-        pygame.draw.line(self.image, NEON_CYAN, (35, 15), (40, 10), 2)
+        # Chevron arrows (launch-pad look)
+        for i in range(3):
+            ax = 18 + i * 10
+            ay = 26 - i * 6
+            pygame.draw.line(self.image, NEON_CYAN, (ax, ay + 4), (ax + 5, ay), 2)
+            pygame.draw.line(self.image, NEON_CYAN, (ax + 5, ay), (ax + 10, ay + 4), 2)
+        # Top edge glow
+        pygame.draw.line(self.image, (255, 255, 200), (12, 24), (48, 6), 1)
         self.rect = self.image.get_rect(midleft=(x, lane_y + 20))
         self.launch_power = -12
 
@@ -114,9 +119,10 @@ class SideRacer(pygame.sprite.Sprite):
 
 class ExcitebikeCoin(pygame.sprite.Sprite):
     """Coin for excitebike mode (horizontal scrolling)."""
-    def __init__(self, x, lane_y, lane_h=55):
+    def __init__(self, x, lane_y, lane_h=55, hazard=False):
         super().__init__()
         self.pulse = random.randint(0, 60)
+        self.hazard = hazard
         self.image = pygame.Surface((22, 22), pygame.SRCALPHA)
         self._draw()
         self.rect = self.image.get_rect(center=(x, lane_y + lane_h // 2))
@@ -124,6 +130,13 @@ class ExcitebikeCoin(pygame.sprite.Sprite):
     def _draw(self):
         self.image.fill((0, 0, 0, 0))
         p = 0.75 + 0.25 * math.sin(self.pulse * 0.12)
+        if self.hazard:
+            pulse_r = int(10 + 1.5 * math.sin(self.pulse * 0.15))
+            pygame.draw.circle(self.image, (255, 140, 0, int(50 * p)), (11, 11), pulse_r)
+            pygame.draw.circle(self.image, (255, 140, 0), (11, 11), 7)
+            pygame.draw.circle(self.image, (255, 200, 80), (11, 11), 4)
+            pygame.draw.circle(self.image, (255, 140, 0, int(120 * p)), (11, 11), 10, 2)
+            return
         pygame.draw.circle(self.image, (*COIN_GOLD, int(60 * p)), (11, 11), 10)
         pygame.draw.circle(self.image, COIN_GOLD, (11, 11), 7)
         pygame.draw.circle(self.image, (255, 245, 180), (11, 11), 4)
@@ -266,6 +279,7 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
             center=(150, self.lane_ys[self.lane] + self.lane_h // 2))
 
         self.speed = 4.0
+        self.max_speed = 16
         self.heat = 0.0
         self.ghost_mode = False
         self.ghost_timer = 0
@@ -300,6 +314,11 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
         self.fire_cooldown = 0
         self.last_emit = 0
 
+        # Tiered boost system
+        self.boost_timer = 0
+        self.boost_power = 0
+        self.boost_cooldown = 0
+
         from core.ui import ComboTracker
         self.combo = ComboTracker()
 
@@ -314,8 +333,11 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
         pygame.draw.rect(surf, self.color_main, (6, 6, 32, 10))
         # Windshield
         pygame.draw.polygon(surf, (*self.color_accent, 180), [(34, 4), (40, 8), (34, 10)])
-        # Rider
-        pygame.draw.circle(surf, (200, 180, 160), (20, 3), 4)
+        # Rider torso (thin rect connecting body to helmet)
+        pygame.draw.rect(surf, (60, 60, 70), (18, 3, 5, 4))
+        # Helmet (small dark polygon instead of big flesh circle)
+        pygame.draw.polygon(surf, (40, 40, 50), [(18, 4), (23, 4), (22, 1), (19, 1)])
+        pygame.draw.line(surf, (80, 80, 90), (19, 1), (22, 1), 1)  # visor glint
         # Exhaust
         pygame.draw.rect(surf, (150, 80, 30), (2, 10, 6, 4))
         return surf
@@ -338,8 +360,13 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
         # Windshield with glint
         pygame.draw.polygon(surf, (*self.color_accent, 180), [(36, 4), (44, 8), (36, 12)])
         pygame.draw.line(surf, (255, 255, 255), (37, 5), (42, 7), 1)
-        # Rider
-        pygame.draw.circle(surf, (200, 180, 160), (22, 3), 5)
+        # Rider torso
+        pygame.draw.rect(surf, (50, 50, 60), (19, 3, 6, 5))
+        # Helmet (rounded rect shape, dark)
+        pygame.draw.rect(surf, (50, 50, 60), (19, 0, 6, 5))
+        pygame.draw.rect(surf, (70, 70, 80), (19, 0, 6, 5), 1)  # helmet edge
+        # Visor stripe
+        pygame.draw.line(surf, (60, 200, 255), (19, 2), (25, 2), 1)
         # Exhaust glow
         pygame.draw.ellipse(surf, (255, 120, 40, 100), (0, 10, 10, 6))
         pygame.draw.ellipse(surf, (255, 200, 100, 60), (2, 11, 6, 4))
@@ -372,11 +399,15 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
         # Windshield with glint
         pygame.draw.polygon(surf, (*self.color_accent, 200), [(38, 4), (46, 8), (38, 12)])
         pygame.draw.line(surf, (255, 255, 255), (39, 5), (44, 7), 1)
-        # Rider with helmet visor
-        pygame.draw.circle(surf, (180, 160, 140), (22, 3), 5)
-        # Visor arc with glint
-        pygame.draw.arc(surf, (60, 200, 255), (18, 0, 8, 6), 0, math.pi, 2)
-        pygame.draw.line(surf, (255, 255, 255), (19, 2), (22, 1), 1)
+        # Rider torso (connects body to helmet)
+        pygame.draw.rect(surf, (45, 45, 55), (19, 3, 7, 5))
+        # Helmet (wider, flatter polygon — looks like proper racing helmet)
+        pygame.draw.polygon(surf, (45, 45, 55), [(18, 4), (26, 4), (25, 0), (19, 0)])
+        pygame.draw.polygon(surf, (60, 60, 70), [(18, 4), (26, 4), (25, 0), (19, 0)], 1)  # edge
+        # Visor (integrated into helmet face)
+        pygame.draw.line(surf, (60, 200, 255), (19, 2), (25, 2), 2)
+        # Visor glint
+        pygame.draw.line(surf, (255, 255, 255), (20, 1), (23, 1), 1)
         # Exhaust glow (brighter for V3)
         pygame.draw.ellipse(surf, (255, 140, 50, 130), (0, 10, 12, 8))
         pygame.draw.ellipse(surf, (255, 220, 120, 80), (2, 11, 8, 6))
@@ -421,9 +452,9 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
                 self.target_lane = self.lane + 1
                 self.lane_transition = 0.0
 
-        # Smooth lane transition
+        # Smooth lane transition (snappy switch)
         if self.lane != self.target_lane:
-            self.lane_transition += 0.08
+            self.lane_transition += 0.12
             if self.lane_transition >= 1.0:
                 self.lane = self.target_lane
                 self.lane_transition = 0.0
@@ -435,18 +466,42 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
         if self._any_key(keys, self.key_brake):
             self.speed = max(self.speed - 0.65, 1.3)
 
-        # Boost
-        if self._any_key(keys, self.key_boost) and self.heat > 50:
-            self.speed += 5
-            self.heat = 0
-            from core.sound import play_sfx
-            play_sfx("boost")
+        # Tiered boost system
+        boost_pressed = self._any_key(keys, self.key_boost)
+        if boost_pressed and self.boost_cooldown <= 0 and self.boost_timer <= 0:
+            from core.sound import play_sfx as _play_sfx
+            if self.heat >= 100:
+                # Tier 3: Ghost Surge
+                self.heat = 0
+                self.boost_timer = 90
+                self.boost_power = 10
+                self.ghost_mode = True
+                self.ghost_timer = 90
+                self.invincible_timer = max(self.invincible_timer, 90)
+                self.boost_cooldown = 18
+                _play_sfx("boost")
+            elif self.heat >= 60:
+                # Tier 2: Power Boost
+                self.heat -= 60
+                self.boost_timer = 54
+                self.boost_power = 6
+                self.invincible_timer = max(self.invincible_timer, 18)
+                self.boost_cooldown = 18
+                _play_sfx("boost")
+            elif self.heat >= 30:
+                # Tier 1: Quick Boost
+                self.heat -= 30
+                self.boost_timer = 36
+                self.boost_power = 3
+                self.boost_cooldown = 18
+                _play_sfx("boost")
 
-        # Ghost mode
-        if self.heat > 100:
-            self.ghost_mode = True
-            self.ghost_timer = 180
-            self.heat = 0
+        if self.boost_timer > 0:
+            self.speed = min(self.speed + self.boost_power * 0.15, self.max_speed + self.boost_power)
+            self.boost_timer -= 1
+        if self.boost_cooldown > 0:
+            self.boost_cooldown -= 1
+
         if self.ghost_mode:
             self.ghost_timer -= 1
             if self.ghost_timer <= 0:
@@ -454,8 +509,14 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
 
         self.heat = max(0, self.heat - 0.3)
         self.speed = max(self.speed - 0.07, 1.3)
+
+        # Combo momentum: speed bonus from active combo, penalty on drop
+        self.speed += self.combo.speed_bonus
+        if self.combo.drop_penalty > 0:
+            self.speed *= 0.85
+
         self.distance += self.speed * 0.01
-        self.score += int(self.speed * 0.5 * self.score_mult)
+        self.score += int(self.speed * 0.5 * self.score_mult * getattr(self, 'speed_mult_factor', 1.0))
 
         # Position
         current_y = self.lane_ys[self.lane] + self.lane_h // 2
@@ -466,11 +527,22 @@ class ExcitebikePlayer(pygame.sprite.Sprite):
         if self.airborne:
             self.vel_y += 0.5
             current_y += self.vel_y
+            # Airtime scoring: bonus points while mid-air
+            self.score += int(2 * self.score_mult)
+            if not hasattr(self, '_airtime_frames'):
+                self._airtime_frames = 0
+            self._airtime_frames += 1
             ground_y = self.lane_ys[self.lane] + self.lane_h // 2
             if current_y >= ground_y:
                 current_y = ground_y
                 self.airborne = False
                 self.vel_y = 0
+                # Landing bonus based on airtime
+                if hasattr(self, '_airtime_frames') and self._airtime_frames > 10:
+                    landing_bonus = self._airtime_frames * 5
+                    self.score += int(landing_bonus * self.score_mult)
+                    self._airtime_bonus = landing_bonus  # For mode to show floating text
+                self._airtime_frames = 0
 
         self.rect.centery = int(current_y)
         self.rect.centerx = 150  # Fixed x position

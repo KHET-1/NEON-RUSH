@@ -1,5 +1,6 @@
 import pygame
 import random
+import math
 
 from core.constants import (
     SCREEN_WIDTH, SCREEN_HEIGHT, BLACK,
@@ -32,8 +33,8 @@ class MicroMachinesMode(GameMode):
     COIN_PARTICLE_COUNT = 0
 
     # Circle shield for top-down car
-    SHIELD_DIMS = (30, 30)
-    SHIELD_OFFSET = (-15, -15)
+    SHIELD_DIMS = (42, 42)
+    SHIELD_OFFSET = (-21, -21)
     SHIELD_SHAPE = 'circle'
 
     # Faster asteroid spawning
@@ -72,6 +73,10 @@ class MicroMachinesMode(GameMode):
             p1.py = SCREEN_HEIGHT - 100
             self.players = [p1]
 
+        # Wire track background into players for track constraint
+        for p in self.players:
+            p.track_bg = self.bg
+
         self.shared_state.inject_into_players(self.players)
 
         # Configure AI players
@@ -101,8 +106,19 @@ class MicroMachinesMode(GameMode):
             _snd.play_sfx("gameover")
             return 'gameover'
 
-        max_speed = max(abs(p.speed) for p in alive_players)
-        self.scroll_speed = max(2, max_speed * 0.8)
+        # Player-centric camera: scroll speed based on player speed + screen position bias
+        avg_speed = sum(abs(p.speed) for p in alive_players) / len(alive_players)
+        target_scroll = max(avg_speed * 0.7, 2.0)
+        # Bias: if player is high on screen, scroll faster; if low, slow down
+        avg_py = sum(p.py for p in alive_players) / len(alive_players)
+        screen_bias = (avg_py - SCREEN_HEIGHT * 0.55) * 0.03
+        self.scroll_speed = max(1.5, min(10.0, target_scroll - screen_bias))
+
+        # Gently push player py toward home zone (screen center-ish)
+        for p in alive_players:
+            home_y = SCREEN_HEIGHT * 0.6
+            drift = (home_y - p.py) * 0.015
+            p.py += drift
 
         for ai in self.ai_controllers:
             ai.update(self)
@@ -137,42 +153,54 @@ class MicroMachinesMode(GameMode):
 
         self.obstacle_timer += 1
         if self.obstacle_timer > max(25, int(70 / self.difficulty_scale)) and random.random() < spawn_mult:
-            x = random.randint(100, SCREEN_WIDTH - 100)
-            b = TrackBarrier(x, -30)
-            self.all_sprites.add(b)
-            self.obstacles.add(b)
+            pos = self._spawn_on_track_edge()
+            if pos:
+                b = TrackBarrier(pos[0], pos[1])
+                self.all_sprites.add(b)
+                self.obstacles.add(b)
+                # 25% chance to spawn a hazard coin near the barrier
+                if random.random() < 0.25:
+                    hc = MicroCoin(pos[0] + random.randint(-40, 40),
+                                   pos[1] + random.randint(-20, 20), hazard=True)
+                    self.all_sprites.add(hc)
+                    self.coins_group.add(hc)
             self.obstacle_timer = 0
 
         self.oil_timer += 1
         if self.oil_timer > 200:
-            x = random.randint(100, SCREEN_WIDTH - 100)
-            oil = OilSlickHazard(x, -30, tier=self.shared_state.evolution_tier)
-            self.all_sprites.add(oil)
-            self.oil_slicks.add(oil)
+            pos = self._spawn_on_track()
+            if pos:
+                oil = OilSlickHazard(pos[0], pos[1], tier=self.shared_state.evolution_tier)
+                self.all_sprites.add(oil)
+                self.oil_slicks.add(oil)
             self.oil_timer = 0
 
         self.car_timer += 1
         if self.car_timer > 120:
-            x = random.randint(100, SCREEN_WIDTH - 100)
-            car = TinyCar(x, -30)
-            self.all_sprites.add(car)
-            self.tiny_cars.add(car)
+            pos = self._spawn_on_track(y_offset=-50)
+            if pos:
+                direction = random.choice(['same', 'oncoming'])
+                car = TinyCar(pos[0], pos[1], direction=direction, track_bg=self.bg)
+                self.all_sprites.add(car)
+                self.tiny_cars.add(car)
             self.car_timer = 0
 
         self.coin_timer += 1
         if self.coin_timer > 30:
-            x = random.randint(100, SCREEN_WIDTH - 100)
-            c = MicroCoin(x, -20)
-            self.all_sprites.add(c)
-            self.coins_group.add(c)
+            pos = self._spawn_on_track(y_offset=-20)
+            if pos:
+                c = MicroCoin(pos[0], pos[1])
+                self.all_sprites.add(c)
+                self.coins_group.add(c)
             self.coin_timer = 0
 
         self.powerup_timer += 1
         if self.powerup_timer > 200:
-            x = random.randint(100, SCREEN_WIDTH - 100)
-            pu = MicroPowerUp(x, -30, tier=self.shared_state.evolution_tier)
-            self.all_sprites.add(pu)
-            self.powerups_group.add(pu)
+            pos = self._spawn_on_track()
+            if pos:
+                pu = MicroPowerUp(pos[0], pos[1], tier=self.shared_state.evolution_tier)
+                self.all_sprites.add(pu)
+                self.powerups_group.add(pu)
             self.powerup_timer = 0
 
         # Update sprites
@@ -211,11 +239,14 @@ class MicroMachinesMode(GameMode):
                     if self._check_all_dead():
                         return 'gameover'
 
-            # Oil slick = spin + slow (phase skips oil too)
+            # Oil slick = full spinout (phase skips oil too)
             oil_hit = pygame.sprite.spritecollideany(p, self.oil_slicks)
             if oil_hit and not p.ghost_mode and not p.phase:
-                p.angle += random.uniform(-0.3, 0.3)
-                p.speed *= 0.9
+                if p.spinout_timer <= 0:
+                    p.spinout_timer = 45  # 0.75s of uncontrolled spin
+                    p.spinout_dir = random.choice([-1, 1])
+                    from core.sound import play_sfx
+                    play_sfx("oil_splat")
 
             # Coins + Powerups
             collected = pygame.sprite.spritecollide(p, self.coins_group, True)
@@ -271,11 +302,80 @@ class MicroMachinesMode(GameMode):
 
     # --- Mode-specific ---
 
+    def _spawn_on_track(self, y_offset=-40):
+        """Return (x, screen_y) on the track ahead of screen, or None."""
+        world_y = self.bg.scroll_offset_value + y_offset
+        bounds = self.bg.get_track_bounds_at_world_y(world_y)
+        if bounds is None:
+            return None
+        left, _center, right = bounds
+        margin = 20
+        if right - left < margin * 2 + 10:
+            return None
+        x = random.randint(int(left) + margin, int(right) - margin)
+        return (x, y_offset)
+
+    def _spawn_on_track_edge(self, y_offset=-40):
+        """Return (x, screen_y) near a track edge for barriers."""
+        world_y = self.bg.scroll_offset_value + y_offset
+        bounds = self.bg.get_track_bounds_at_world_y(world_y)
+        if bounds is None:
+            return None
+        left, _center, right = bounds
+        side = random.choice(['left', 'right'])
+        x = int(left + 15) if side == 'left' else int(right - 15)
+        return (x, y_offset)
+
     def _create_boss(self):
         return MicroMachinesBoss(self.particles, shake=self.shake,
-                                evolution_tier=self.shared_state.evolution_tier)
+                                evolution_tier=self.shared_state.evolution_tier,
+                                track_bg=self.bg)
 
     _surge_speed = 8
+
+    def _bolt_direction(self):
+        """Micro Machines: bolts fire in player's facing direction."""
+        return "aimed"
+
+    def _create_bolts_for_player(self, p, bx, by, heat_bolts_group):
+        """Create directional bolts that fire in the player's facing angle."""
+        from shared.boss_base import HeatBolt
+
+        bolt = HeatBolt(bx, by, p.color_accent)
+        # Override speed to use directional velocity
+        bolt_speed = 12
+        bolt._vx = math.cos(p.angle) * bolt_speed
+        bolt._vy = math.sin(p.angle) * bolt_speed
+        bolt._aimed = True  # Flag for directional update
+        heat_bolts_group.add(bolt)
+
+    def _update_boss_bolts(self, keys, alive_players):
+        """Micro Machines: directional bolts + boss collision."""
+        has_target = self.boss and self.boss.alive
+        for p in alive_players:
+            fired, bx, by = p.try_fire_heat_bolt(keys, auto_fire=has_target)
+            if fired:
+                self._create_bolts_for_player(p, bx, by, self.heat_bolts)
+
+        from core.constants import SOLAR_YELLOW, SOLAR_WHITE
+        for bolt in list(self.heat_bolts):
+            if getattr(bolt, '_aimed', False):
+                bolt.rect.x += int(bolt._vx)
+                bolt.rect.y += int(bolt._vy)
+                if (bolt.rect.bottom < -20 or bolt.rect.top > SCREEN_HEIGHT + 20 or
+                        bolt.rect.right < -20 or bolt.rect.left > SCREEN_WIDTH + 20):
+                    bolt.alive = False
+                    bolt.kill()
+                    continue
+            else:
+                bolt.update()
+            if not bolt.alive:
+                continue
+            if self.boss and self.boss.alive and bolt.rect.colliderect(self.boss.rect):
+                self.boss.take_damage(bolt.damage, "heat_bolt")
+                self.particles.burst(bolt.rect.centerx, bolt.rect.centery,
+                                     [SOLAR_YELLOW, SOLAR_WHITE], 6, 3, 20, 2)
+                bolt.kill()
 
     def get_rocket_targets(self):
         targets = super().get_rocket_targets()

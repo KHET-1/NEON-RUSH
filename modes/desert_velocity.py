@@ -173,6 +173,17 @@ class DesertVelocityMode(GameMode):
                 obs = Obstacle(min(self.difficulty_scale * diff_s["obstacle_mult"], 3.0))
             self.all_sprites.add(obs)
             self.obstacles.add(obs)
+            # 25% chance to spawn a hazard coin near the obstacle
+            if random.random() < 0.25:
+                if self._tier >= 2:
+                    hlane = obs.lane_offset + random.uniform(-0.15, 0.15) if hasattr(obs, 'lane_offset') else random.uniform(-0.8, 0.8)
+                    hc = Coin(tier=self._tier, lane_offset=hlane, hazard=True)
+                else:
+                    hc = Coin(hazard=True)
+                    hc.rect.x = obs.rect.x + random.randint(-40, 40)
+                    hc.rect.y = obs.rect.y + random.randint(-20, 20)
+                self.all_sprites.add(hc)
+                self.coins_group.add(hc)
             self.obstacle_timer = 0
 
         self.coin_timer += 1
@@ -253,6 +264,12 @@ class DesertVelocityMode(GameMode):
                 p.flare_hit = False
                 self.floating_texts.append(
                     FloatingText(p.rect.centerx, p.rect.top - 30, "+200 FLARE!", SOLAR_YELLOW, 28))
+                # Solar flare environmental damage to boss
+                if self.boss_active and self.boss and self.boss.alive:
+                    self.boss.take_damage(10, source="environmental")
+                    self.floating_texts.append(
+                        FloatingText(self.boss.rect.centerx, self.boss.rect.top - 20,
+                                     "FLARE -10!", SOLAR_YELLOW, 22))
 
         # New weapon systems
         self._update_homing_rockets(alive_players)
@@ -324,6 +341,26 @@ class DesertVelocityMode(GameMode):
         self.orbit_orbs.draw(screen)
 
         self._draw_powerup_effects(screen, alive_players)
+
+        # Speed vignette: darken screen edges at high speed
+        if max_speed > 12:
+            vignette_alpha = min(60, int((max_speed - 12) * 8))
+            if not hasattr(self, '_vignette_surf'):
+                self._vignette_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            self._vignette_surf.fill((0, 0, 0, 0))
+            edge_w = 80
+            for i in range(edge_w):
+                a = int(vignette_alpha * (1.0 - i / edge_w))
+                pygame.draw.line(self._vignette_surf, (0, 0, 0, a), (i, 0), (i, SCREEN_HEIGHT))
+                pygame.draw.line(self._vignette_surf, (0, 0, 0, a),
+                                 (SCREEN_WIDTH - 1 - i, 0), (SCREEN_WIDTH - 1 - i, SCREEN_HEIGHT))
+            edge_h = 50
+            for i in range(edge_h):
+                a = int(vignette_alpha * 0.6 * (1.0 - i / edge_h))
+                pygame.draw.line(self._vignette_surf, (0, 0, 0, a), (0, i), (SCREEN_WIDTH, i))
+                pygame.draw.line(self._vignette_surf, (0, 0, 0, a),
+                                 (0, SCREEN_HEIGHT - 1 - i), (SCREEN_WIDTH, SCREEN_HEIGHT - 1 - i))
+            screen.blit(self._vignette_surf, (0, 0))
 
         # Slowmo tint (cached surface)
         if any_slowmo:

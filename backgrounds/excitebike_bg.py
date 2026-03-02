@@ -8,8 +8,8 @@ from core.constants import SCREEN_WIDTH, SCREEN_HEIGHT, NEON_CYAN, NEON_MAGENTA
 # Color palette for excitebike
 SKY_TOP = (30, 20, 60)
 SKY_BOTTOM = (80, 40, 100)
-MOUNTAIN_FAR = (50, 30, 70)
-MOUNTAIN_NEAR = (70, 40, 80)
+MOUNTAIN_FAR = (40, 22, 55)
+MOUNTAIN_NEAR = (80, 50, 95)
 GROUND_COLOR = (100, 65, 30)
 ROAD_DARK = (60, 55, 50)
 ROAD_LIGHT = (80, 75, 65)
@@ -134,7 +134,8 @@ class ExcitebikeBg:
         while x < SCREEN_WIDTH * 3:
             h = rng.randint(min_h, max_h)
             w = rng.randint(60, 140)
-            points.append((x, h, w))
+            peak_seed = rng.randint(0, 999999)
+            points.append((x, h, w, peak_seed))
             x += w * 0.7
         return points
 
@@ -280,18 +281,11 @@ class ExcitebikeBg:
         return self.LANE_Y[1]
 
     def _draw_snow_caps(self, screen):
-        """Draw white snow lines along top 15% of far mountain peaks."""
-        offset = int(self.mountain_scroll * 0.4) % (SCREEN_WIDTH * 3)
-        for px, ph, pw in self.mountains_far:
-            sx = px - offset
-            if sx + pw < -100 or sx > SCREEN_WIDTH + 100:
-                continue
-            peak_y = 180 - ph
-            cap_h = int(ph * 0.15)
-            # Snow highlight along peak ridge
-            p1 = (sx + pw // 3, peak_y)
-            p2 = (sx + pw * 2 // 3, int(peak_y + ph * 0.3))
-            pygame.draw.line(screen, (200, 200, 220, 120), p1, p2, 2)
+        """Draw white snow lines along top 15% of far mountain peaks.
+        Note: Snow caps are now integrated into _draw_mountains() for tier 2+.
+        This method is kept for backward compatibility but is a no-op.
+        """
+        pass
 
     def _draw_v2_terrain_detail(self, screen):
         """V2+ grass tufts, flowers, and tree silhouettes."""
@@ -368,6 +362,20 @@ class ExcitebikeBg:
                 g = int(SKY_TOP[1] + (SKY_BOTTOM[1] - SKY_TOP[1]) * t)
                 b = int(SKY_TOP[2] + (SKY_BOTTOM[2] - SKY_TOP[2]) * t)
                 pygame.draw.line(screen, (r, g, b), (0, y), (SCREEN_WIDTH, y))
+            # V1: Scatter stars in upper sky
+            if not hasattr(self, '_v1_stars'):
+                rng = random.Random(123)
+                self._v1_stars = [
+                    (rng.randint(0, SCREEN_WIDTH), rng.randint(5, 120),
+                     rng.choice([(200, 200, 220), (180, 180, 200), (220, 220, 240)]),
+                     rng.randint(1, 2))
+                    for _ in range(20)
+                ]
+            for sx, sy, sc, sr in self._v1_stars:
+                # Twinkle effect
+                twinkle = 0.6 + 0.4 * math.sin(self._tick * 0.05 + sx * 0.1)
+                c = tuple(int(v * twinkle) for v in sc)
+                pygame.draw.circle(screen, c, (sx, sy), sr)
 
         # V2+: Far cloud layer
         if self.tier >= 2 and hasattr(self, '_clouds_far'):
@@ -547,28 +555,79 @@ class ExcitebikeBg:
 
     def _draw_mountains(self, screen, peaks, color, scroll, base_y):
         offset = int(scroll) % (SCREEN_WIDTH * 3)
-        for px, ph, pw in peaks:
+        # Color variants for gradient bands
+        dark = tuple(max(0, c - 15) for c in color)
+        mid = color
+        light = tuple(min(255, c + 15) for c in color)
+        ridge_color = tuple(min(255, c + 30) for c in color)
+
+        for peak_data in peaks:
+            px, ph, pw = peak_data[0], peak_data[1], peak_data[2]
+            peak_seed = peak_data[3] if len(peak_data) > 3 else hash((px, ph))
             sx = px - offset
             if sx + pw < -100 or sx > SCREEN_WIDTH + 100:
                 continue
-            points = [
-                (sx, base_y),
-                (sx + pw // 3, base_y - ph),
-                (sx + pw * 2 // 3, base_y - ph * 0.7),
-                (sx + pw, base_y),
-            ]
-            pygame.draw.polygon(screen, color, points)
 
-            # V2+: Mountain gradient highlight (lighter ridge)
-            if self.tier >= 2:
-                highlight = tuple(min(255, c + 20) for c in color)
-                ridge_pts = [
-                    (sx + pw // 3, base_y - ph),
-                    (sx + pw * 2 // 3, base_y - ph * 0.7),
-                    (sx + pw // 2, base_y - ph * 0.5),
-                ]
-                if len(ridge_pts) >= 3:
-                    pygame.draw.polygon(screen, highlight, ridge_pts)
+            # Generate 6-8 ridge points for natural jagged look
+            rng = random.Random(peak_seed)
+            num_points = rng.randint(5, 7)
+            points = [(sx, base_y)]
+            highest_pt = None
+            highest_y = base_y
+            for i in range(num_points):
+                t = (i + 1) / (num_points + 1)
+                x_pos = sx + pw * t
+                # Height varies: peaks near center are taller
+                center_bias = 1.0 - abs(t - 0.45) * 1.8
+                h = ph * max(0.3, center_bias) * rng.uniform(0.7, 1.0)
+                pt_y = base_y - h
+                points.append((x_pos, pt_y))
+                if pt_y < highest_y:
+                    highest_y = pt_y
+                    highest_pt = (x_pos, pt_y)
+            points.append((sx + pw, base_y))
+
+            # Draw base polygon in dark color
+            pygame.draw.polygon(screen, dark, points)
+
+            # Lighter upper band (top 40% of mountain)
+            band_y = base_y - ph * 0.6
+            clip_pts = []
+            for pt in points:
+                clip_pts.append(pt if pt[1] < band_y else (pt[0], band_y))
+            if len(clip_pts) >= 3:
+                pygame.draw.polygon(screen, mid, clip_pts)
+
+            # Lightest peak band (top 20%)
+            peak_band_y = base_y - ph * 0.8
+            peak_pts = []
+            for pt in points:
+                peak_pts.append(pt if pt[1] < peak_band_y else (pt[0], peak_band_y))
+            if len(peak_pts) >= 3:
+                pygame.draw.polygon(screen, light, peak_pts)
+
+            # Ridgeline highlight
+            ridge_line = [p for p in points if p[1] < base_y]
+            if len(ridge_line) >= 2:
+                pygame.draw.lines(screen, ridge_color, False, ridge_line, 2)
+
+            # Snow caps (tier 2+) — white polygon on peaks above 70% height
+            if self.tier >= 2 and highest_pt:
+                snow_threshold = base_y - ph * 0.7
+                snow_pts = []
+                for pt in points:
+                    if pt[1] < snow_threshold:
+                        snow_pts.append(pt)
+                    else:
+                        snow_pts.append((pt[0], snow_threshold))
+                # Only draw if there are actual above-threshold points
+                has_snow = any(pt[1] < snow_threshold for pt in points)
+                if has_snow and len(snow_pts) >= 3:
+                    pygame.draw.polygon(screen, (200, 200, 220, 120), snow_pts)
+                    # Bright snow edge line
+                    snow_edge = [p for p in points if p[1] < snow_threshold]
+                    if len(snow_edge) >= 2:
+                        pygame.draw.lines(screen, (220, 220, 240), False, snow_edge, 1)
 
     def _draw_terrain(self, screen):
         """Draw sine-wave terrain along the ground line."""

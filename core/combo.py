@@ -10,11 +10,15 @@ from core.sound import play_sfx
 
 
 class ComboTracker:
+    SPEED_BONUSES = {1: 0.0, 2: 0.5, 3: 1.0, 4: 1.5}
+
     def __init__(self):
         self.count = 0
         self.timer = 0
         self.multiplier = 1
         self.display_timer = 0
+        self.speed_bonus = 0.0
+        self.drop_penalty = 0
 
     def hit(self):
         self.count += 1
@@ -29,13 +33,20 @@ class ComboTracker:
             self.multiplier = 1
         if self.multiplier > 1:
             self.display_timer = 90
+        self.speed_bonus = self.SPEED_BONUSES.get(self.multiplier, 1.5)
+        self.drop_penalty = 0
 
     def update(self):
         if self.timer > 0:
             self.timer -= 1
             if self.timer <= 0:
+                if self.multiplier > 1:
+                    self.drop_penalty = 45
                 self.count = 0
                 self.multiplier = 1
+                self.speed_bonus = 0.0
+        if self.drop_penalty > 0:
+            self.drop_penalty -= 1
         if self.display_timer > 0:
             self.display_timer -= 1
 

@@ -101,6 +101,10 @@ class GameMode:
         self.difficulty_scale = 1.0
         self.milestone = MilestoneTracker()
 
+        # Near-miss chain state
+        self.near_miss_chain = 0
+        self.near_miss_cooldown = 0
+
     def setup(self):
         """Initialize mode. Called once when mode starts."""
         raise NotImplementedError
@@ -121,6 +125,10 @@ class GameMode:
             if track:
                 _snd.music_channel.play(track, loops=-1)
                 _snd.music_channel.set_volume(0.08 if self.boss_active else 0.06)
+
+        # Set speed_mult_factor on all players each frame for distance scoring
+        for p in self.players:
+            p.speed_mult_factor = self._speed_multiplier(p)
 
         # Godmode: keep all players invincible and alive
         if self.GOD_MODE:
@@ -417,28 +425,40 @@ class GameMode:
         """Color for coin floating text. Desert overrides for combo coloring."""
         return COIN_GOLD
 
+    # --- Speed multiplier ---
+
+    def _speed_multiplier(self, player):
+        """1.0x at speed 0, 2.5x at max speed. Linear interpolation."""
+        max_speed = getattr(player, 'max_speed', 16)
+        t = min(abs(getattr(player, 'speed', 0)) / max(max_speed, 1), 1.0)
+        return 1.0 + t * 1.5  # 1.0 → 2.5
+
     # --- Collection methods ---
 
     def _collect_coins(self, player, coins):
         """Handle coin collection: combo, score, particles, sfx, task notify."""
         from core.hud import FloatingText
         coins = self._filter_projected(coins)
-        for _ in coins:
+        for c in coins:
             player.coins += 1
             player.combo.hit()
-            pts = player.combo.get_bonus(50) * player.score_mult
+            base = 100 if getattr(c, 'hazard', False) else 50
+            pts = int(player.combo.get_bonus(base) * player.score_mult * self._speed_multiplier(player))
             player.score += pts
+            is_hazard = getattr(c, 'hazard', False)
+            particle_colors = [(255, 140, 0), (255, 200, 80)] if is_hazard else list(self.COIN_PARTICLE_COLORS)
             if self.COIN_PARTICLE_COUNT > 0:
                 self.particles.burst(
                     player.rect.centerx,
                     player.rect.centery + self.COIN_PARTICLE_OFFSET_Y,
-                    list(self.COIN_PARTICLE_COLORS),
+                    particle_colors,
                     self.COIN_PARTICLE_COUNT, self.COIN_PARTICLE_SIZE,
                     self.COIN_PARTICLE_SPEED, self.COIN_PARTICLE_LIFE)
-            color = self._coin_text_color(player)
+            color = (255, 140, 0) if is_hazard else self._coin_text_color(player)
+            label = f"+{pts} RISK!" if is_hazard else f"+{pts}"
             self.floating_texts.append(
                 FloatingText(player.rect.centerx, player.rect.top - 15,
-                             f"+{pts}", color))
+                             label, color))
             _snd.play_sfx("coin")
             self._notify_task('coin_collected')
 
@@ -677,13 +697,45 @@ class GameMode:
     # --- Near-miss detection ---
 
     def _check_near_misses(self):
-        """Detect obstacles that scrolled past players without hitting."""
+        """Real-time proximity detection with escalating chain rewards."""
+        from core.hud import FloatingText
         group, offscreen_fn = self._get_near_miss_obstacles()
         if group is None:
             return
+        if self.near_miss_cooldown > 0:
+            self.near_miss_cooldown -= 1
+        alive_players = self.get_alive_players()
+        NEAR_MISS_DIST = 35
+        triggered = False
         for obs in list(group):
             if offscreen_fn(obs):
-                self._notify_task('near_miss')
+                continue
+            for p in alive_players:
+                if p.invincible_timer > 0 or p.ghost_mode or p.phase:
+                    continue
+                dist = math.hypot(p.rect.centerx - obs.rect.centerx,
+                                  p.rect.centery - obs.rect.centery)
+                if dist < NEAR_MISS_DIST and self.near_miss_cooldown <= 0:
+                    self.near_miss_chain += 1
+                    chain_bonus = min(self.near_miss_chain, 5)
+                    pts = int(75 * chain_bonus * p.score_mult * self._speed_multiplier(p))
+                    p.score += pts
+                    p.heat = min(p.heat + 8, 100)
+                    self.floating_texts.append(
+                        FloatingText(p.rect.centerx, p.rect.top - 25,
+                                     f"NEAR MISS x{chain_bonus}! +{pts}",
+                                     NEON_CYAN, size=16))
+                    self.particles.burst(
+                        obs.rect.centerx, obs.rect.centery,
+                        [NEON_CYAN, (255, 255, 255)], 6, 2, 15, 2)
+                    self.near_miss_cooldown = 12
+                    _snd.play_sfx("select")
+                    self._notify_task('near_miss')
+                    triggered = True
+                    break
+        # Decay chain if no near-miss recently
+        if not triggered and self.near_miss_cooldown <= 0 and self.near_miss_chain > 0:
+            self.near_miss_chain = max(0, self.near_miss_chain - 1)
 
     def _get_near_miss_obstacles(self):
         """Return (group, offscreen_fn) for near-miss detection. None = none."""

@@ -45,6 +45,17 @@ class ParticleSystem:
             c = random.choice(colors) if isinstance(colors, list) else colors
             self.particles.add(Particle(x, y, c, [vx, vy], life, size))
 
+    def burst_directed(self, x, y, colors, count=10, speed=5, life=40, size=3,
+                       angle_center=0, angle_spread=math.pi / 3):
+        """Directional burst — particles within a cone around angle_center."""
+        for _ in range(count):
+            angle = angle_center + random.uniform(-angle_spread / 2, angle_spread / 2)
+            spd = random.uniform(speed * 0.5, speed)
+            vx = math.cos(angle) * spd
+            vy = math.sin(angle) * spd
+            c = random.choice(colors) if isinstance(colors, list) else colors
+            self.particles.add(Particle(x, y, c, [vx, vy], life, size))
+
     def update(self):
         self.particles.update()
         if len(self.particles) > PARTICLE_CAP:

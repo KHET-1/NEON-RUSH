@@ -1,5 +1,6 @@
 import pygame
 import random
+import math
 
 from core.constants import (
     SCREEN_WIDTH, SCREEN_HEIGHT, BLACK, NEON_CYAN,
@@ -145,6 +146,12 @@ class ExcitebikeMode(GameMode):
                 self.barriers.add(b)
             else:
                 self.mud_patches.add(b)
+            # 25% chance to spawn a hazard coin near the barrier
+            if isinstance(b, Barrier) and random.random() < 0.25:
+                hc = ExcitebikeCoin(b.rect.x + random.randint(-40, 40),
+                                    lane_y, hazard=True)
+                self.all_sprites.add(hc)
+                self.coins_group.add(hc)
             self.obstacle_timer = 0
 
         self.ramp_timer += 1
@@ -219,18 +226,36 @@ class ExcitebikeMode(GameMode):
                     if self._check_all_dead():
                         return 'gameover'
 
-            # Mud slowdown (phase skips mud too)
+            # Mud slowdown (dramatic + splatter particles)
             mud_hit = pygame.sprite.spritecollideany(p, self.mud_patches)
             if mud_hit and not p.ghost_mode and not p.phase:
-                p.speed = max(1, p.speed * 0.95)
+                p.speed = max(1, p.speed * 0.88)  # Heavier slowdown
+                # Mud splatter particles
+                if random.random() < 0.4:
+                    for _ in range(2):
+                        mc = random.choice([(90, 65, 35), (70, 50, 25), (110, 80, 40)])
+                        self.particles.emit(
+                            p.rect.centerx + random.randint(-8, 8),
+                            p.rect.bottom + random.randint(-4, 4),
+                            mc, [random.uniform(-1.5, 1.5), random.uniform(-2, 0)], 18, 3)
+
+            # Airtime landing bonus display
+            if hasattr(p, '_airtime_bonus') and p._airtime_bonus > 0:
+                self.floating_texts.append(
+                    FloatingText(p.rect.centerx, p.rect.top - 30,
+                                 f"+{p._airtime_bonus} AIRTIME!", SOLAR_YELLOW, 20))
+                p._airtime_bonus = 0
 
             # Ramp launch
             ramp_hit = pygame.sprite.spritecollideany(p, self.ramps)
             if ramp_hit and not p.airborne:
                 p.launch(ramp_hit.launch_power)
                 ramp_hit.kill()
-                self.particles.burst(p.rect.centerx, p.rect.centery,
-                                      [SOLAR_YELLOW, NEON_CYAN], 8, 4, 25, 3)
+                self.particles.burst_directed(
+                    p.rect.left, p.rect.centery,
+                    [SOLAR_YELLOW, NEON_CYAN, (255, 160, 40)],
+                    count=12, speed=6, life=15, size=2,
+                    angle_center=math.pi, angle_spread=math.pi / 2.5)
                 ramp_pts = 150 * p.score_mult
                 p.score += ramp_pts
                 self.floating_texts.append(

@@ -335,13 +335,13 @@ class TaskManager:
     # --- HUD rendering ---
 
     def draw_hud(self, screen, level_label=None):
-        """Draw task progress HUD at bottom-center of screen."""
+        """Draw task progress HUD at top-right of screen (out of play area)."""
         from core.fonts import FONT_HUD_SM, FONT_HUD_SM_BOLD
 
         if not self.tasks and not self.all_done:
             return
 
-        bar_w = 220
+        bar_w = 180
         bar_h = 12
         task_h = 22  # height per task row
         pad = 6
@@ -349,13 +349,13 @@ class TaskManager:
         header_h = 18
 
         total_h = header_h + num_tasks * task_h + pad * 2
-        bx = SCREEN_WIDTH // 2 - (bar_w + pad * 2) // 2
-        by = SCREEN_HEIGHT - total_h - 8
-
-        # Panel background
         panel_w = bar_w + pad * 2
+        bx = SCREEN_WIDTH - panel_w - 8
+        by = 90  # Below P1 HUD panel
+
+        # Panel background (slightly more transparent)
         panel_surf = pygame.Surface((panel_w, total_h), pygame.SRCALPHA)
-        panel_surf.fill((8, 8, 16, 180))
+        panel_surf.fill((8, 8, 16, 150))
         pygame.draw.rect(panel_surf, TASK_BAR_BORDER,
                          (0, 0, panel_w, total_h), 1)
         screen.blit(panel_surf, (bx, by))
@@ -427,7 +427,7 @@ class TaskManager:
             if show:
                 boss_text = flash_font.render("BOSS INCOMING!", True, SOLAR_YELLOW)
                 boss_x = SCREEN_WIDTH // 2 - boss_text.get_width() // 2
-                boss_y = by - 24
+                boss_y = by + total_h + 4
                 screen.blit(boss_text, (boss_x, boss_y))
 
 

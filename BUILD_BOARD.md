@@ -221,6 +221,8 @@ Reviewers get listed in COMPLETE/DIAMOND entries AND in the Credits table in `AI
 
 *(Drop yours below. Newest at the top.)*
 
+- [idea] Architect | 2026-03-02 | **Test coverage expansion** — 47 pytest tests now cover tasks, bosses, powerups, player timers. Next high-value targets: mode lifecycle (setup/cleanup), crash report generation, shared player state carry-over between modes, and combo tracker logic. The conftest.py pattern makes adding more trivial.
+- [idea] Architect | 2026-03-02 | **V1 visual parity for Excitebike + Micro Machines** — V1 Desert now has gradient sky + mesas. The other two modes' V1 branches could use the same treatment (Excitebike: rolling hills + dusk sky; Micro Machines: tabletop wood grain + scattered toy props).
 - [idea] Architect | 2026-03-01 | **V3 Visuals** — 13 files need `if tier >= 3:` branches. Desert V3: crimson sandstorm, lightning. Excitebike V3: night mode, neon signs, rain. Micro V3: holographic grid, glitch effects. See plan in `~/.claude/plans/kind-sparking-bumblebee.md` §7.
 - [idea] Architect | 2026-03-01 | **"Micro Machines backwards" report** — user said steering feels backwards. Top-down mode uses heading-based rotation where up on stick = forward relative to car heading, not screen-up. May need a "relative vs absolute steering" option or just make it screen-relative for accessibility.
 - [idea] Architect | 2026-03-01 | **--windowed still fullscreen bug** — user reported --windowed didn't work. Code verified correct via headless test. Possible causes: stale __pycache__ (cleared), or user ran without the flag. Added print confirmations + RESIZABLE flag. Needs live verification.

@@ -102,10 +102,11 @@ class Obstacle(RoadSpriteMixin, pygame.sprite.Sprite):
 
 
 class Coin(RoadSpriteMixin, pygame.sprite.Sprite):
-    def __init__(self, tier=1, lane_offset=None):
+    def __init__(self, tier=1, lane_offset=None, hazard=False):
         super().__init__()
         self.pulse = random.randint(0, 60)
         self.tier = tier
+        self.hazard = hazard
         surf_size = 40 if tier >= 3 else (36 if tier >= 2 else 28)
         self.image = pygame.Surface((surf_size, surf_size), pygame.SRCALPHA)
         self._surf_size = surf_size
@@ -123,6 +124,16 @@ class Coin(RoadSpriteMixin, pygame.sprite.Sprite):
         p = 0.75 + 0.25 * math.sin(self.pulse * 0.12)
         cx = self._surf_size // 2
         cy = cx
+
+        # Hazard coin: orange glow ring + pulsing outline
+        if self.hazard:
+            glow_r = cx - 1
+            pulse_r = int(glow_r + 2 * math.sin(self.pulse * 0.15))
+            pygame.draw.circle(self.image, (255, 140, 0, int(50 * p)), (cx, cy), pulse_r)
+            pygame.draw.circle(self.image, (255, 140, 0), (cx, cy), glow_r - 2)
+            pygame.draw.circle(self.image, (255, 200, 80), (cx, cy), glow_r - 5)
+            pygame.draw.circle(self.image, (255, 140, 0, int(120 * p)), (cx, cy), glow_r, 2)
+            return
 
         if self.tier >= 3:
             # V3: 40px surface, 8 sparkle lines, secondary inner glow ring

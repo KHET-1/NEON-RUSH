@@ -42,10 +42,10 @@ SEG_CHICANE_RL = "chicane_rl"
 MIN_SEG_LENGTH = 200
 MAX_SEG_LENGTH = 400
 
-# Off-track colors
-GRASS_GREEN = (35, 65, 25)
-GRAVEL_BROWN = (55, 45, 30)
-DARK_GROUND = (22, 22, 28)
+# Off-track colors (urban asphalt palette)
+GRASS_GREEN = (42, 38, 48)       # Dark purple-grey urban
+GRAVEL_BROWN = (70, 58, 38)
+DARK_GROUND = (18, 16, 24)       # Deeper purple-black
 
 # Rumble strip colors
 RUMBLE_RED = (200, 40, 40)
@@ -54,7 +54,7 @@ RUMBLE_WHITE = (220, 220, 220)
 # Center line
 CENTER_DASH_LEN = 20
 CENTER_GAP_LEN = 15
-CENTER_LINE_COLOR = (200, 180, 40)
+CENTER_LINE_COLOR = (255, 240, 80)
 
 # Checkpoint
 CHECKPOINT_INTERVAL = 1000  # pixels of total scroll distance
@@ -213,8 +213,8 @@ class MicroMachinesBG:
             parallax_factor=0.6,
             base_color=GRASS_GREEN,
             detail_colors=[
-                (45, 75, 30), (30, 55, 20), (50, 80, 35),
-                (60, 50, 30), (40, 40, 25),
+                (50, 45, 55), (35, 32, 42), (55, 50, 60),
+                (0, 180, 180, 140), (180, 0, 180, 100),
             ],
             dot_density=300,
         )
@@ -222,8 +222,8 @@ class MicroMachinesBG:
             parallax_factor=0.3,
             base_color=DARK_GROUND,
             detail_colors=[
-                (28, 28, 34), (18, 18, 22), (35, 30, 25),
-                (25, 20, 18),
+                (24, 22, 30), (16, 14, 20), (30, 28, 35),
+                (180, 160, 0, 80),
             ],
             dot_density=150,
         )
@@ -241,7 +241,7 @@ class MicroMachinesBG:
 
         # V2+: Bake cyberpunk grid lines onto far tile (zero runtime cost)
         if tier >= 2:
-            grid_color = (0, 180, 200, 25)
+            grid_color = (0, 180, 200, 45)
             grid_spacing = 40
             for gx in range(0, SCREEN_WIDTH, grid_spacing):
                 pygame.draw.line(self.layer_far.tile, grid_color,
@@ -294,7 +294,7 @@ class MicroMachinesBG:
 
             # Override far layer to void-black with bright grid
             self.layer_far.tile.fill((2, 3, 8))
-            grid_color = (0, 255, 180, 35)
+            grid_color = (0, 255, 180, 50)
             grid_spacing = 30
             for gx in range(0, SCREEN_WIDTH, grid_spacing):
                 pygame.draw.line(self.layer_far.tile, grid_color,
@@ -305,7 +305,7 @@ class MicroMachinesBG:
             # Bright intersection dots
             for gx in range(0, SCREEN_WIDTH, grid_spacing):
                 for gy in range(0, self.layer_far.tile_height, grid_spacing):
-                    pygame.draw.circle(self.layer_far.tile, (0, 255, 220, 60), (gx, gy), 2)
+                    pygame.draw.circle(self.layer_far.tile, (0, 255, 220, 80), (gx, gy), 3)
 
             # Override close layer to darker void
             self.layer_close.tile.fill((4, 5, 12))
@@ -348,10 +348,10 @@ class MicroMachinesBG:
         spacing = 20
         for x in range(0, size, spacing):
             thick = 2 if x % (spacing * 2) == 0 else 1
-            pygame.draw.line(tile, (0, 200, 160, 40), (x, 0), (x, size), thick)
+            pygame.draw.line(tile, (0, 200, 160, 55), (x, 0), (x, size), thick)
         for y in range(0, size, spacing):
             thick = 2 if y % (spacing * 2) == 0 else 1
-            pygame.draw.line(tile, (0, 200, 160, 40), (0, y), (size, y), thick)
+            pygame.draw.line(tile, (0, 200, 160, 55), (0, y), (size, y), thick)
         # Intersection dots on primary lines
         for x in range(0, size, spacing * 2):
             for y in range(0, size, spacing * 2):
@@ -429,6 +429,47 @@ class MicroMachinesBG:
         buffer_y = SCREEN_HEIGHT * 3
         while self.next_segment_y < buffer_y:
             self._generate_segment()
+
+    # --- Track Query Interface (used by gameplay for track constraint) ---
+
+    @property
+    def scroll_offset_value(self):
+        """Current world-y scroll offset. screen_y + scroll_offset = world_y."""
+        return self.scroll_offset
+
+    def get_track_bounds_at_world_y(self, world_y):
+        """Return (left_x, center_x, right_x) at a given world-y coordinate.
+
+        Returns None if world_y is not within any known segment.
+        """
+        for seg in self.segments:
+            if seg.y_start <= world_y < seg.y_end:
+                if seg.length > 0:
+                    local_t = (world_y - seg.y_start) / seg.length
+                    local_t = max(0.0, min(1.0, local_t))
+                else:
+                    local_t = 0.0
+                cx = seg.get_center_x(local_t)
+                return (cx - HALF_TRACK, cx, cx + HALF_TRACK)
+        return None
+
+    def get_track_center_ahead(self, world_y, look_ahead_px=100):
+        """Return center_x at world_y + look_ahead_px. For AI steering.
+
+        Falls back to SCREEN_WIDTH // 2 if no segment found.
+        """
+        bounds = self.get_track_bounds_at_world_y(world_y + look_ahead_px)
+        if bounds:
+            return bounds[1]
+        return SCREEN_WIDTH // 2
+
+    def is_on_track(self, screen_x, world_y, margin=0):
+        """Return True if (screen_x, world_y) is within track bounds + margin."""
+        bounds = self.get_track_bounds_at_world_y(world_y)
+        if bounds is None:
+            return True  # If no segment found, assume on-track (safe default)
+        left, _center, right = bounds
+        return (left - margin) <= screen_x <= (right + margin)
 
     def update(self, scroll_speed):
         """Advance track scroll, generate new segments, cull old ones.
@@ -520,9 +561,9 @@ class MicroMachinesBG:
             elif self.tier >= 2:
                 world_y = y + self.scroll_offset
                 if int(world_y) % 6 < 3:
-                    road_col = (30, 28, 42)
+                    road_col = (25, 23, 38)
                 else:
-                    road_col = (38, 35, 50)
+                    road_col = (45, 42, 60)
                 pygame.draw.line(screen, road_col, (left, y), (right, y))
             else:
                 pygame.draw.line(screen, ROAD_COLOR, (left, y), (right, y))
@@ -566,7 +607,7 @@ class MicroMachinesBG:
             dash_pos = (world_y + self.dash_offset) % (CENTER_DASH_LEN + CENTER_GAP_LEN)
             if dash_pos < CENTER_DASH_LEN:
                 icx = int(cx)
-                pygame.draw.line(screen, CENTER_LINE_COLOR, (icx - 1, y), (icx + 1, y), 2)
+                pygame.draw.line(screen, CENTER_LINE_COLOR, (icx - 1, y), (icx + 1, y), 3)
 
             # V2+: Track edge pulse flash every ~200 world-px
             if self.tier >= 2:

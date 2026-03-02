@@ -168,15 +168,19 @@ class AIController:
         p._ai_keys = keys
 
     # -------------------------------------------------------------------------
-    # Micro Machines — top-down free movement
+    # Micro Machines — track-aware top-down movement
     # -------------------------------------------------------------------------
     def _update_micromachines(self, mode):
         p = self.player
         keys = {"up": True, "down": False, "left": False, "right": False,
                 "boost": False, "fire": False}
 
-        # Compute target point
-        target_x, target_y = None, None
+        # Get track center ahead of player for primary navigation
+        target_x = SCREEN_WIDTH // 2
+        if hasattr(mode, 'bg') and mode.bg:
+            world_y = p.py + mode.bg.scroll_offset_value
+            center_ahead = mode.bg.get_track_center_ahead(world_y, 80)
+            target_x = center_ahead
 
         # Priority 1: Avoid nearby obstacles / cars
         nearest_threat_dist = 999
@@ -191,58 +195,39 @@ class AIController:
                     threat_x, threat_y = dx, dy
 
         if nearest_threat_dist < 80:
-            # Flee opposite direction
+            # Dodge away from threat but stay on track
             target_x = p.px - threat_x * 2
-            target_y = p.py - threat_y * 2
         else:
-            # Priority 2: Seek nearest coin
-            best_coin = None
-            best_d = 999
+            # Priority 2: Seek nearest coin that's on-track and ahead
             for c in mode.coins_group:
-                dx = c.rect.centerx - p.px
-                dy = c.rect.centery - p.py
-                dist = math.sqrt(dx * dx + dy * dy)
-                if dist < best_d:
-                    best_d = dist
-                    best_coin = c
-            if best_coin and best_d < 300:
-                target_x = best_coin.rect.centerx
-                target_y = best_coin.rect.centery
-            else:
-                # Wander pattern
-                self._wander_timer += 1
-                if self._wander_timer > 120:
-                    self._wander_angle = random.uniform(0, math.pi * 2)
-                    self._wander_timer = 0
-                target_x = p.px + math.cos(self._wander_angle) * 150
-                target_y = p.py + math.sin(self._wander_angle) * 150
+                if c.rect.centery < p.py and c.rect.centery > p.py - 200:
+                    target_x = c.rect.centerx
+                    break
 
-        # Wall avoidance — push target away from edges
-        margin = 80
-        if p.px < margin:
-            target_x = max(target_x or margin, margin + 50)
-        elif p.px > SCREEN_WIDTH - margin:
-            target_x = min(target_x or SCREEN_WIDTH - margin, SCREEN_WIDTH - margin - 50)
-        if p.py < margin:
-            target_y = max(target_y or margin, margin + 50)
-        elif p.py > SCREEN_HEIGHT - margin:
-            target_y = min(target_y or SCREEN_HEIGHT - margin, SCREEN_HEIGHT - margin - 50)
+        # Steer toward target via signed angle difference
+        # For top-down: primarily lateral steering toward target_x
+        desired_angle = math.atan2(-1, target_x - p.px)  # Bias upward (-y)
+        diff = desired_angle - p.angle
+        while diff > math.pi:
+            diff -= 2 * math.pi
+        while diff < -math.pi:
+            diff += 2 * math.pi
 
-        # Steer towards target via signed angle difference
-        if target_x is not None and target_y is not None:
-            desired_angle = math.atan2(target_y - p.py, target_x - p.px)
-            diff = desired_angle - p.angle
-            # Normalize to [-pi, pi]
-            while diff > math.pi:
-                diff -= 2 * math.pi
-            while diff < -math.pi:
-                diff += 2 * math.pi
+        dead_zone = 0.1
+        if diff > dead_zone:
+            keys["right"] = True
+        elif diff < -dead_zone:
+            keys["left"] = True
 
-            dead_zone = 0.1
-            if diff > dead_zone:
-                keys["right"] = True
-            elif diff < -dead_zone:
-                keys["left"] = True
+        # Slow down on sharp curves
+        if hasattr(mode, 'bg') and mode.bg:
+            world_y = p.py + mode.bg.scroll_offset_value
+            cur_center = mode.bg.get_track_center_ahead(world_y, 0)
+            ahead_center = mode.bg.get_track_center_ahead(world_y, 100)
+            curve_diff = abs(ahead_center - cur_center)
+            if curve_diff > 30 and abs(p.speed) > 6:
+                keys["up"] = False
+                keys["down"] = True  # Brake into curves
 
         # Fire at boss
         if mode.boss_active and mode.boss and mode.boss.alive:
@@ -252,7 +237,7 @@ class AIController:
             if p.heat >= 40 and p.fire_cooldown <= 0:
                 keys["fire"] = True
 
-        # Boost occasionally
+        # Boost occasionally when heat is high
         if p.heat > 60 and not p.ghost_mode and random.random() < 0.02:
             keys["boost"] = True
 
