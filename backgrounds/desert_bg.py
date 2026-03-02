@@ -146,6 +146,12 @@ class Background:
             # VFX post-processing state (scanlines disabled — saves ~1ms/frame)
             self._vfx = VFXState(enable_scanlines=False)
 
+        if tier == 1:
+            # V1 visual warmth — pre-rendered gradient sky + mesa silhouettes
+            self._v1_sky = self._make_v1_gradient()
+            self._v1_mesas = self._gen_v1_mesas()
+            self._v1_mesa_scroll = 0.0
+
         # --- V3 Crimson Sandstorm Upgrades ---
         if tier >= 3:
             from core.vfx import (
@@ -792,6 +798,78 @@ class Background:
             self._embers.update()
             self._embers.draw(screen)
 
+    # --- V1 visual helpers (NES-era warmth) ---
+
+    def _make_v1_gradient(self):
+        """Pre-render a sky-to-sand gradient for V1 (replaces flat fill)."""
+        horizon_y = int(SCREEN_HEIGHT * 0.40)
+        surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+
+        # Sky region: muted blue → warm horizon
+        sky_top = (100, 140, 180)
+        sky_bot = (200, 150, 90)
+        for y in range(horizon_y):
+            t = y / max(1, horizon_y - 1)
+            r = int(sky_top[0] + (sky_bot[0] - sky_top[0]) * t)
+            g = int(sky_top[1] + (sky_bot[1] - sky_top[1]) * t)
+            b = int(sky_top[2] + (sky_bot[2] - sky_top[2]) * t)
+            pygame.draw.line(surf, (r, g, b), (0, y), (SCREEN_WIDTH, y))
+
+        # Ground region: sand → DESERT_BG
+        sand_top = (180, 120, 50)
+        sand_bot = DESERT_BG
+        ground_h = SCREEN_HEIGHT - horizon_y
+        for y in range(ground_h):
+            t = y / max(1, ground_h - 1)
+            r = int(sand_top[0] + (sand_bot[0] - sand_top[0]) * t)
+            g = int(sand_top[1] + (sand_bot[1] - sand_top[1]) * t)
+            b = int(sand_top[2] + (sand_bot[2] - sand_top[2]) * t)
+            pygame.draw.line(surf, (r, g, b), (0, horizon_y + y), (SCREEN_WIDTH, horizon_y + y))
+
+        # Horizon line — 2px warm accent
+        pygame.draw.line(surf, (220, 160, 80), (0, horizon_y), (SCREEN_WIDTH, horizon_y), 2)
+
+        return surf
+
+    def _gen_v1_mesas(self):
+        """Generate 2-3 flat mesa silhouettes for V1 parallax."""
+        rng = random.Random(42)
+        mesas = []
+        for _ in range(3):
+            # Flat-topped trapezoid defined by (x_center, base_half_w, top_half_w, height)
+            cx = rng.randint(50, SCREEN_WIDTH - 50)
+            base_hw = rng.randint(60, 120)
+            top_hw = rng.randint(25, base_hw - 15)
+            h = rng.randint(30, 55)
+            mesas.append((cx, base_hw, top_hw, h))
+        return mesas
+
+    def _draw_v1_mesas(self, screen, speed):
+        """Draw slow-scrolling mesa silhouettes on the V1 horizon."""
+        horizon_y = int(SCREEN_HEIGHT * 0.40)
+        self._v1_mesa_scroll += speed * 0.08  # 8% parallax
+
+        mesa_color = (90, 45, 15)
+        mesa_highlight = (110, 60, 25)
+
+        for cx, base_hw, top_hw, h in self._v1_mesas:
+            # Wrap horizontally for infinite scroll
+            x = (cx - int(self._v1_mesa_scroll)) % (SCREEN_WIDTH + 200) - 100
+            base_y = horizon_y
+            top_y = horizon_y - h
+
+            # Trapezoid: wide base, narrow top
+            points = [
+                (x - base_hw, base_y),
+                (x - top_hw, top_y),
+                (x + top_hw, top_y),
+                (x + base_hw, base_y),
+            ]
+            pygame.draw.polygon(screen, mesa_color, points)
+            # Flat top highlight
+            pygame.draw.line(screen, mesa_highlight,
+                             (x - top_hw, top_y), (x + top_hw, top_y), 2)
+
     def tick_road(self, speed):
         """Advance road geometry without drawing. Call from update() so
         projection works even in headless mode."""
@@ -819,8 +897,9 @@ class Background:
                 # V2+: full pseudo-3D (everything drawn inside perspective ground)
                 self._draw_v2(actual_speed, screen)
         else:
-            # V1: flat desert fill + solid road
-            screen.fill(DESERT_BG)
+            # V1: warm gradient sky + mesa silhouettes + solid road
+            screen.blit(self._v1_sky, (0, 0))
+            self._draw_v1_mesas(screen, actual_speed)
             pygame.draw.rect(screen, ROAD_SHOULDER,
                              (ROAD_LEFT - 24, 0, ROAD_WIDTH + 48,
                               SCREEN_HEIGHT))
