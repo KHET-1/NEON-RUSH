@@ -1,11 +1,12 @@
 import pygame
 import math
+import random
 
 from core.constants import (
     SCREEN_WIDTH, SCREEN_HEIGHT, SOLAR_YELLOW, DESERT_ORANGE,
     NEON_MAGENTA, NEON_CYAN, COIN_GOLD, SOLAR_WHITE,
     DIFF_EASY, DIFF_NORMAL, DIFF_HARD, DIFFICULTY_SETTINGS,
-    DASH_LENGTH, DASH_GAP, ROAD_LEFT, ROAD_WIDTH, ROAD_CENTER, SLOWMO_GREEN,
+    DASH_LENGTH, DASH_GAP, ROAD_LEFT, ROAD_RIGHT, ROAD_WIDTH, ROAD_CENTER, SLOWMO_GREEN,
 )
 from core.fonts import load_font
 from core.hud import draw_panel
@@ -15,6 +16,125 @@ from core.sound import play_sfx
 
 # Backward-compatible re-exports (moved to core.combo)
 from core.combo import ComboTracker, MilestoneTracker
+
+# --- Neon title glow surface cache (keyed by text_width) ---
+_neon_glow_cache = {}   # width -> Surface(width, 4, SRCALPHA)
+_neon_render_cache = {}  # (text, font_id) -> (bloom_surf, inner_surf, core_surf, tw)
+
+# --- Title screen background (lazy-initialized, cached) ---
+_title_bg_surf = None
+_title_sun_surf = None
+_title_overlay_surf = None
+_TITLE_STAR_SEED = 42
+_TITLE_HORIZON_Y = int(SCREEN_HEIGHT * 0.55)  # horizon line for title screen sun
+
+
+def _build_title_bg():
+    """Pre-render synthwave sky gradient for the title screen (built once)."""
+    global _title_bg_surf
+    try:
+        from core.vfx import make_multi_gradient
+        _title_bg_surf = make_multi_gradient(SCREEN_WIDTH, SCREEN_HEIGHT, [
+            (0.00, (4, 2, 18)),
+            (0.12, (8, 4, 28)),
+            (0.25, (14, 6, 38)),
+            (0.40, (22, 8, 48)),
+            (0.55, (40, 12, 52)),
+            (0.68, (65, 18, 55)),
+            (0.80, (110, 40, 65)),
+            (0.90, (150, 65, 55)),
+            (1.00, (180, 90, 45)),
+        ])
+    except Exception:
+        _title_bg_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        _title_bg_surf.fill((10, 5, 25))
+
+
+def _build_title_sun():
+    """Pre-render synthwave setting sun for title screen."""
+    global _title_sun_surf
+    size = 220
+    surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    cx, cy = size // 2, size // 2
+    body_r = 75
+
+    for i in range(14, 0, -1):
+        r = body_r + i * 8
+        a = int(110 * ((1 - i / 14) ** 1.5))
+        pygame.draw.circle(surf, (255, 100, 40, a), (cx, cy), r)
+
+    pygame.draw.circle(surf, (255, 200, 100, 70), (cx, cy), body_r + 2, 3)
+    pygame.draw.circle(surf, (240, 100, 30), (cx, cy), body_r)
+    pygame.draw.circle(surf, (250, 160, 60), (cx, cy), body_r - 12)
+    pygame.draw.circle(surf, (255, 210, 120), (cx, cy), body_r - 28)
+    pygame.draw.circle(surf, (255, 240, 180), (cx, cy), body_r - 44)
+    pygame.draw.circle(surf, (255, 250, 220), (cx, cy), body_r - 56)
+
+    for gap in [20, 38, 54, 66, 76]:
+        sy = cy + gap
+        dy = sy - cy
+        if abs(dy) < body_r:
+            half_w = int(math.sqrt(body_r * body_r - dy * dy))
+            stripe_h = max(2, 6 - gap // 18)
+            pygame.draw.rect(surf, (0, 0, 0, 140), (cx - half_w, sy, half_w * 2, stripe_h))
+
+    _title_sun_surf = surf
+
+
+def _build_title_overlay():
+    """Pre-render dark gradient overlay so menu text stays readable over the sky."""
+    global _title_overlay_surf
+    surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+    for y in range(SCREEN_HEIGHT):
+        if y < 45:
+            a = 0
+        elif y < 90:
+            a = int(150 * (y - 45) / 45)
+        else:
+            a = 150
+        pygame.draw.line(surf, (4, 2, 14, a), (0, y), (SCREEN_WIDTH, y))
+    _title_overlay_surf = surf
+
+
+def _draw_title_background(screen, tick):
+    """Draw the synthwave background for the title screen."""
+    if _title_bg_surf is None:
+        _build_title_bg()
+    if _title_sun_surf is None:
+        _build_title_sun()
+    if _title_overlay_surf is None:
+        _build_title_overlay()
+
+    screen.blit(_title_bg_surf, (0, 0))
+
+    # Stars (fixed seed = stable positions, twinkle with sin)
+    rng = random.Random(_TITLE_STAR_SEED)
+    for _ in range(55):
+        sx = rng.randint(0, SCREEN_WIDTH)
+        sy = rng.randint(5, _TITLE_HORIZON_Y - 20)
+        bright = rng.randint(120, 220)
+        phase = rng.uniform(0, math.pi * 2)
+        pulse = math.sin(tick * 0.03 + phase)
+        b = max(60, min(255, int(bright + 35 * pulse)))
+        pygame.draw.circle(screen, (b, b, b), (sx, sy), 1)
+
+    # Sun (upper-center, slightly above the horizon)
+    sun = _title_sun_surf
+    sun_x = SCREEN_WIDTH // 2 - sun.get_width() // 2
+    sun_y = _TITLE_HORIZON_Y - int(sun.get_height() * 0.55) + int(2.5 * math.sin(tick * 0.003))
+    screen.blit(sun, (sun_x, sun_y))
+
+    # Horizon glow band
+    if not hasattr(_draw_title_background, '_glow'):
+        glow = pygame.Surface((SCREEN_WIDTH, 40), pygame.SRCALPHA)
+        for row in range(40):
+            a = int(60 * (1 - row / 40))
+            pygame.draw.line(glow, (255, 130, 50, a), (0, row), (SCREEN_WIDTH, row))
+        _draw_title_background._glow = glow
+    screen.blit(_draw_title_background._glow, (0, _TITLE_HORIZON_Y - 10))
+
+    # Dark overlay so menu text is readable
+    screen.blit(_title_overlay_surf, (0, 0))
 
 
 class HighScoreEntry:
@@ -176,30 +296,37 @@ def _draw_row_cursor(screen, y, tick):
 def _draw_neon_title(screen, text, font, cx, y, tick, scale=1.0):
     """Procedural neon text: magenta bloom → cyan inner → white core + pulse."""
     pulse = 0.6 + 0.4 * math.sin(tick * 0.05)
-    # Cycle hue between cyan and magenta
     mg_a = int(160 * pulse)
     cy_a = int(180 * (1.0 - pulse * 0.4))
 
-    # Layer 1: magenta bloom (8 directions, 4px offset)
-    bloom = font.render(text, True, NEON_MAGENTA)
-    bloom.set_alpha(mg_a)
+    # Cached rendered surfaces (same text + font = same pixels; only alpha changes)
+    cache_key = (text, id(font))
+    if cache_key not in _neon_render_cache:
+        bloom = font.render(text, True, NEON_MAGENTA)
+        inner = font.render(text, True, NEON_CYAN)
+        core = font.render(text, True, (255, 255, 255))
+        tw = font.size(text)[0]
+        _neon_render_cache[cache_key] = (bloom, inner, core, tw)
+    bloom, inner, core, tw = _neon_render_cache[cache_key]
+
     bx = cx - bloom.get_width() // 2
+
+    # Layer 1: magenta bloom (8 directions, 4px offset)
+    bloom.set_alpha(mg_a)
     for dx, dy in [(-4, -4), (4, -4), (-4, 4), (4, 4),
                    (-4, 0), (4, 0), (0, -4), (0, 4)]:
         screen.blit(bloom, (bx + dx, y + dy))
 
     # Layer 2: cyan inner glow (4 directions, 2px offset)
-    inner = font.render(text, True, NEON_CYAN)
     inner.set_alpha(cy_a)
     for dx, dy in [(-2, -2), (2, -2), (-2, 2), (2, 2)]:
         screen.blit(inner, (bx + dx, y + dy))
 
-    # Layer 3: white core
-    core = font.render(text, True, (255, 255, 255))
+    # Layer 3: white core (full alpha — reset in case previous call changed it)
+    core.set_alpha(255)
     screen.blit(core, (bx, y))
 
     # Neon underline pulsing cyan↔magenta
-    tw = font.size(text)[0]
     ul_y = y + font.get_height() + 2
     line_color = (
         int(NEON_CYAN[0] * (1 - pulse) + NEON_MAGENTA[0] * pulse),
@@ -208,8 +335,10 @@ def _draw_neon_title(screen, text, font, cx, y, tick, scale=1.0):
     )
     pygame.draw.line(screen, line_color,
                      (cx - tw // 2, ul_y), (cx + tw // 2, ul_y), 2)
-    # Glow echo
-    glow_line = pygame.Surface((tw, 4), pygame.SRCALPHA)
+    # Glow echo — cached surface per text width
+    if tw not in _neon_glow_cache:
+        _neon_glow_cache[tw] = pygame.Surface((tw, 4), pygame.SRCALPHA)
+    glow_line = _neon_glow_cache[tw]
     glow_line.fill((*line_color, int(50 * pulse)))
     screen.blit(glow_line, (cx - tw // 2, ul_y - 1))
 
@@ -220,17 +349,22 @@ def draw_title(screen, tick, selected_diff=DIFF_NORMAL, ai_reward_mult=1,
                sound_enabled=True, menu_row=0, menu_col=0):
     from core.fonts import FONT_TITLE, FONT_NEON_TITLE, FONT_SUBTITLE, FONT_HUD, FONT_HUD_SM, FONT_HUD_SM_BOLD
 
-    t = (tick % 180) / 180
-    r = int(10 + 8 * math.sin(t * math.pi * 2))
-    g = int(4 + 4 * math.sin(t * math.pi * 2 + 0.5))
-    b = int(22 + 16 * math.sin(t * math.pi * 2 + 1))
-    screen.fill((r, g, b))
+    _draw_title_background(screen, tick)
 
-    pygame.draw.rect(screen, (28, 28, 38), (ROAD_LEFT, 0, ROAD_WIDTH, SCREEN_HEIGHT))
+    # Road only below the horizon — sun shines above it
+    pygame.draw.rect(screen, (20, 18, 30),
+                     (ROAD_LEFT, _TITLE_HORIZON_Y, ROAD_WIDTH, SCREEN_HEIGHT - _TITLE_HORIZON_Y))
+    # Edge neon lines along road borders below horizon
+    pygame.draw.line(screen, (30, 180, 220), (ROAD_LEFT, _TITLE_HORIZON_Y), (ROAD_LEFT, SCREEN_HEIGHT), 2)
+    pygame.draw.line(screen, (30, 180, 220), (ROAD_RIGHT, _TITLE_HORIZON_Y), (ROAD_RIGHT, SCREEN_HEIGHT), 2)
+    # Scrolling dashes below horizon only
     offset = int(tick * 2) % (DASH_LENGTH + DASH_GAP)
-    y = -DASH_LENGTH + offset
+    y = _TITLE_HORIZON_Y - DASH_LENGTH + offset
     while y < SCREEN_HEIGHT:
-        pygame.draw.line(screen, NEON_MAGENTA, (ROAD_CENTER, y), (ROAD_CENTER, y + DASH_LENGTH), 2)
+        y1 = max(y, _TITLE_HORIZON_Y)
+        y2 = min(y + DASH_LENGTH, SCREEN_HEIGHT)
+        if y1 < y2:
+            pygame.draw.line(screen, NEON_MAGENTA, (ROAD_CENTER, y1), (ROAD_CENTER, y2), 2)
         y += DASH_LENGTH + DASH_GAP
 
     cx = SCREEN_WIDTH // 2

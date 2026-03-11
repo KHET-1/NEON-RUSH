@@ -553,6 +553,95 @@ class SandstormSweep(AttackPattern):
         return rects
 
 
+class HeatStripAttack(AttackPattern):
+    """Horizontal fire strips sweep up from bottom — safe zone at top forces players to push up.
+    2 strips in phase 1, 3 in phase 2, 4 in phase 3. Strips oscillate vertically."""
+    NAME = "heat_strip"
+    DURATION = 180
+    WEIGHT = 1.1
+
+    def __init__(self):
+        super().__init__()
+        self.strips = []
+
+    def start(self, boss):
+        super().start(boss)
+        self.strips = []
+        count = 2 + boss.current_phase_idx
+        safe_top = int(SCREEN_HEIGHT * 0.2)  # top 20% is safe zone
+        strip_zone = SCREEN_HEIGHT - safe_top
+        for i in range(count):
+            base_y = safe_top + int(strip_zone * (i + 1) / (count + 1))
+            self.strips.append({
+                'base_y': base_y,
+                'y': float(base_y),
+                'height': 50 - boss.current_phase_idx * 5,
+                'speed': random.uniform(0.5, 1.5) * (1 + boss.current_phase_idx * 0.3),
+                'phase': random.uniform(0, math.pi * 2),
+                'active': False,
+                'telegraph': 40,
+            })
+        play_sfx("sandstorm_wind")
+
+    def update(self, boss, players, particles, dt=1):
+        self.timer += 1
+        for s in self.strips:
+            if self.timer >= s['telegraph']:
+                s['active'] = True
+            if s['active']:
+                # Strips oscillate up and down
+                s['y'] = s['base_y'] + math.sin(self.timer * 0.04 + s['phase']) * 30
+                # Fire particles along strip
+                if self.timer % 5 == 0:
+                    px = random.randint(ROAD_LEFT, ROAD_RIGHT)
+                    particles.emit(px, int(s['y']), (255, 100, 30),
+                                   [random.uniform(-1, 1), random.uniform(-2, 2)], 20, 3)
+        if self.timer >= self.DURATION:
+            self.active = False
+            return True
+        return False
+
+    def draw(self, screen, boss):
+        for s in self.strips:
+            if not s['active']:
+                # Telegraph: flickering warning lines
+                if (self.timer // 5) % 2 == 0:
+                    pygame.draw.line(screen, (*SOLAR_YELLOW, 120),
+                                     (ROAD_LEFT, int(s['base_y'])),
+                                     (ROAD_RIGHT, int(s['base_y'])), 2)
+            else:
+                # Fire strip
+                strip_surf = pygame.Surface((ROAD_RIGHT - ROAD_LEFT, s['height']), pygame.SRCALPHA)
+                alpha = int(70 + 40 * math.sin(self.timer * 0.12))
+                strip_surf.fill((255, 60, 10, alpha))
+                # Core bright line
+                pygame.draw.line(strip_surf, (255, 200, 50, min(255, alpha + 60)),
+                                 (0, s['height'] // 2),
+                                 (ROAD_RIGHT - ROAD_LEFT, s['height'] // 2), 3)
+                screen.blit(strip_surf, (ROAD_LEFT, int(s['y'] - s['height'] // 2)))
+        # Draw safe zone indicator at top
+        if any(s['active'] for s in self.strips):
+            safe_h = int(SCREEN_HEIGHT * 0.2)
+            safe_surf = pygame.Surface((ROAD_RIGHT - ROAD_LEFT, safe_h), pygame.SRCALPHA)
+            pulse = int(20 + 15 * math.sin(self.timer * 0.1))
+            safe_surf.fill((0, 255, 200, pulse))
+            screen.blit(safe_surf, (ROAD_LEFT, 0))
+            # "SAFE ZONE" text
+            font = pygame.font.SysFont("dejavusans", 14, bold=True)
+            txt = font.render("PUSH UP!", True, NEON_CYAN)
+            txt.set_alpha(min(255, 150 + int(80 * math.sin(self.timer * 0.15))))
+            screen.blit(txt, (ROAD_CENTER - txt.get_width() // 2, safe_h // 2 - 7))
+
+    def get_strip_rects(self):
+        """Return hazard rects for collision."""
+        rects = []
+        for s in self.strips:
+            if s['active']:
+                rects.append(pygame.Rect(ROAD_LEFT, int(s['y'] - s['height'] // 2),
+                                         ROAD_RIGHT - ROAD_LEFT, s['height']))
+        return rects
+
+
 # === Desert Boss ===
 
 class DesertBoss(Boss):
@@ -578,14 +667,14 @@ class DesertBoss(Boss):
         return [
             BossPhase(
                 hp_threshold=1.0,
-                attacks=[SandstormAttack(), BoulderBarrage(), DiveAttack()],
+                attacks=[SandstormAttack(), BoulderBarrage(), DiveAttack(), HeatStripAttack()],
                 vulnerability_after_attack=int(54 * vm),
                 speed_mult=1.0,
                 color=SAND_YELLOW,
             ),
             BossPhase(
                 hp_threshold=0.66,
-                attacks=[BoulderBarrage(), QuicksandVortex(), DiveAttack(), SandstormAttack()],
+                attacks=[BoulderBarrage(), QuicksandVortex(), DiveAttack(), SandstormAttack(), HeatStripAttack()],
                 vulnerability_after_attack=int(40 * vm),
                 speed_mult=1.3,
                 color=DESERT_ORANGE,
@@ -593,7 +682,7 @@ class DesertBoss(Boss):
             BossPhase(
                 hp_threshold=0.33,
                 attacks=[SandstormSweep(), QuicksandVortex(), BoulderBarrage(),
-                         DiveAttack(), SolarBeamAttack()],
+                         DiveAttack(), SolarBeamAttack(), HeatStripAttack()],
                 vulnerability_after_attack=int(30 * vm),
                 speed_mult=1.6,
                 color=NEON_MAGENTA,
@@ -786,4 +875,6 @@ class DesertBoss(Boss):
                 hazards.extend(('rect', r) for r in self.current_attack.get_vortex_rects())
             elif isinstance(self.current_attack, SandstormSweep):
                 hazards.extend(('rect', r) for r in self.current_attack.get_wall_rects())
+            elif isinstance(self.current_attack, HeatStripAttack):
+                hazards.extend(('rect', r) for r in self.current_attack.get_strip_rects())
         return hazards

@@ -198,14 +198,17 @@ class DesertVelocityMode(GameMode):
             self.coin_timer = 0
 
         self.powerup_timer += 1
-        if self.powerup_timer > diff_s.get("powerup_interval", 600):
-            if self._tier >= 2:
-                lane = random.uniform(-0.6, 0.6)
-                pu = PowerUp(tier=self._tier, lane_offset=lane)
-            else:
-                pu = PowerUp()
-            self.all_sprites.add(pu)
-            self.powerups_group.add(pu)
+        if self.powerup_timer > diff_s.get("powerup_interval", 160):
+            # Spawn 1-2 powerups (30% chance for double drop)
+            count = 2 if random.random() < 0.3 else 1
+            for _ in range(count):
+                if self._tier >= 2:
+                    lane = random.uniform(-0.6, 0.6)
+                    pu = PowerUp(tier=self._tier, lane_offset=lane)
+                else:
+                    pu = PowerUp()
+                self.all_sprites.add(pu)
+                self.powerups_group.add(pu)
             self.powerup_timer = 0
 
         self.flare_timer -= 1

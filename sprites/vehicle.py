@@ -374,13 +374,15 @@ class Player(pygame.sprite.Sprite):
             self.leap_request = 0
 
         if self._any_key(keys, self.keys_left):
-            self.rect.x -= int(6.5 * spd_m)
+            self.rect.x -= int(8 * spd_m)
         if self._any_key(keys, self.keys_right):
-            self.rect.x += int(6.5 * spd_m)
+            self.rect.x += int(8 * spd_m)
         if self._any_key(keys, self.keys_up):
+            self.rect.y -= int(5 * spd_m)
             self.speed = min(self.speed + 1.0, 16)
             self.heat += 1.5
         if self._any_key(keys, self.keys_down):
+            self.rect.y += int(4 * spd_m)
             self.speed = max(self.speed - 1.3, 0)
 
         # Apply curve drift + road center tracking
@@ -422,8 +424,18 @@ class Player(pygame.sprite.Sprite):
                 self.rect.bottom = target_bottom
                 self.vel_y = 0
         else:
+            # Gentle gravity pull toward road bottom when not pressing up
             target_bottom = int(getattr(self, '_road_y_smooth', SCREEN_HEIGHT - 30))
-            self.rect.bottom = target_bottom
+            if not self._any_key(keys, self.keys_up):
+                diff = target_bottom - self.rect.bottom
+                if abs(diff) > 1:
+                    self.rect.y += int(diff * 0.08)
+                else:
+                    self.rect.bottom = target_bottom
+
+        # Clamp vertical bounds — can go up to 30% of screen, not off bottom
+        self.rect.top = max(int(SCREEN_HEIGHT * 0.15), self.rect.top)
+        self.rect.bottom = min(int(getattr(self, '_road_y_smooth', SCREEN_HEIGHT - 30)), self.rect.bottom)
 
         # Tiered boost system
         boost_pressed = self._any_key(keys, self.keys_boost)

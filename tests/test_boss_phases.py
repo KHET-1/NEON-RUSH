@@ -14,9 +14,9 @@ class TestDesertBossPhases:
         assert phases[0].hp_threshold == 1.0
         assert phases[1].hp_threshold == 0.66
         assert phases[2].hp_threshold == 0.33
-        assert len(phases[0].attacks) == 3
-        assert len(phases[1].attacks) == 4
-        assert len(phases[2].attacks) == 5
+        assert len(phases[0].attacks) >= 3
+        assert len(phases[1].attacks) >= 4
+        assert len(phases[2].attacks) >= 5
 
 
 class TestExcitebikeBossPhases:

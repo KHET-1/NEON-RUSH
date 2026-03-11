@@ -80,7 +80,7 @@ DIFFICULTY_SETTINGS = {
         "boss_time_mult": 1.33,       # boss arrives 33% later (4 min)
         "boss_hp_mult": 0.75,         # boss has 25% less HP
         "coin_interval": 30,          # coins more frequent
-        "powerup_interval": 200,      # powerups very frequent
+        "powerup_interval": 110,      # powerups raining down
         "vulnerability_mult": 1.4,    # vulnerability windows 40% wider
         "boss_spawn_suppress": 0.15,  # very few obstacles during boss
     },
@@ -90,7 +90,7 @@ DIFFICULTY_SETTINGS = {
         "boss_time_mult": 1.0,
         "boss_hp_mult": 1.0,
         "coin_interval": 40,
-        "powerup_interval": 300,
+        "powerup_interval": 160,
         "vulnerability_mult": 1.0,
         "boss_spawn_suppress": 0.3,
     },
@@ -100,7 +100,7 @@ DIFFICULTY_SETTINGS = {
         "boss_time_mult": 0.67,       # boss arrives 33% sooner (2 min)
         "boss_hp_mult": 1.4,          # boss has 40% more HP
         "coin_interval": 50,          # coins less frequent
-        "powerup_interval": 450,      # powerups less frequent
+        "powerup_interval": 250,      # powerups still frequent on hard
         "vulnerability_mult": 0.7,    # vulnerability windows 30% tighter
         "boss_spawn_suppress": 0.5,   # more obstacles during boss
     },

@@ -591,9 +591,32 @@ class MicroCoin(pygame.sprite.Sprite):
         pygame.draw.circle(self.image, (*COIN_GOLD, int(60 * p)), (9, 9), 8)
         pygame.draw.circle(self.image, COIN_GOLD, (9, 9), 6)
 
-    def update(self, scroll_speed):
+    def update(self, scroll_speed, players=None):
         self.pulse += 1
         self._draw()
+        # Baseline magnetism — coins always pull toward nearest player
+        if players:
+            best_dist = 999999
+            best_p = None
+            for p in players:
+                if not p.alive:
+                    continue
+                dx = p.rect.centerx - self.rect.centerx
+                dy = p.rect.centery - self.rect.centery
+                dist = math.sqrt(dx * dx + dy * dy)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_p = p
+            if best_p:
+                dx = best_p.rect.centerx - self.rect.centerx
+                dy = best_p.rect.centery - self.rect.centery
+                dist = max(1, best_dist)
+                if getattr(best_p, 'magnet', False) and dist < 450:
+                    self.rect.x += int(dx / dist * 15)
+                    self.rect.y += int(dy / dist * 15)
+                elif dist < 300:
+                    self.rect.x += int(dx / dist * 5)
+                    self.rect.y += int(dy / dist * 5)
         self.rect.y += scroll_speed
         if self.rect.top > SCREEN_HEIGHT + 30:
             self.kill()
@@ -640,8 +663,8 @@ class MicroPowerUp(pygame.sprite.Sprite):
 
     def update(self, scroll_speed, players=None):
         self.pulse += 1
-        # Tiers 1-2: auto-attract toward nearest player
-        if self.tier <= 2 and players:
+        # Powerups always aggressively attract toward nearest player
+        if players:
             best_dist = 999999
             best_p = None
             for p in players:
@@ -653,12 +676,12 @@ class MicroPowerUp(pygame.sprite.Sprite):
                 if dist < best_dist:
                     best_dist = dist
                     best_p = p
-            if best_p and best_dist < 250:
+            if best_p and best_dist < 450:
                 dx = best_p.rect.centerx - self.rect.centerx
                 dy = best_p.rect.centery - self.rect.centery
                 dist = max(1, best_dist)
-                self.rect.x += int(dx / dist * 4)
-                self.rect.y += int(dy / dist * 4)
+                self.rect.x += int(dx / dist * 12)
+                self.rect.y += int(dy / dist * 12)
         self._draw()
         self.rect.y += scroll_speed
         if self.rect.top > SCREEN_HEIGHT + 30:

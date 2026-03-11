@@ -182,17 +182,22 @@ class Coin(RoadSpriteMixin, pygame.sprite.Sprite):
     def update(self, scroll_speed, players=None, road_geometry=None):
         self.pulse += 1
         if self.tier >= 2 and road_geometry and hasattr(self, 'world_z'):
-            # Magnet effect: adjust lane_offset and world_z toward player
-            if players:
+            # Magnet pull toward nearest player (world-space)
+            if players and self._projected:
                 for p in players:
-                    if p.alive and p.magnet and self._projected:
-                        dx = p.rect.centerx - self.rect.centerx
-                        dy = p.rect.centery - self.rect.centery
-                        dist = max(1, math.sqrt(dx * dx + dy * dy))
-                        if dist < 200:
-                            # Pull toward player in world space
-                            self.lane_offset -= (self.lane_offset * 0.05)
-                            self.world_z -= 2.0
+                    if not p.alive:
+                        continue
+                    dx = p.rect.centerx - self.rect.centerx
+                    dy = p.rect.centery - self.rect.centery
+                    dist = max(1, math.sqrt(dx * dx + dy * dy))
+                    if p.magnet and dist < 450:
+                        # Strong magnet pull
+                        self.lane_offset -= self.lane_offset * 0.12
+                        self.world_z -= 4.0
+                    elif dist < 300:
+                        # Baseline magnetism — always-on light pull
+                        self.lane_offset -= self.lane_offset * 0.04
+                        self.world_z -= 1.5
             self._draw()
             self._original_image = self.image.copy()
             self.advance_toward_camera(scroll_speed + self.base_speed)
@@ -203,13 +208,19 @@ class Coin(RoadSpriteMixin, pygame.sprite.Sprite):
             self.rect.y += scroll_speed + self.base_speed
             if players:
                 for p in players:
-                    if p.alive and p.magnet:
-                        dx = p.rect.centerx - self.rect.centerx
-                        dy = p.rect.centery - self.rect.centery
-                        dist = max(1, math.sqrt(dx * dx + dy * dy))
-                        if dist < 200:
-                            self.rect.x += int(dx / dist * 6)
-                            self.rect.y += int(dy / dist * 6)
+                    if not p.alive:
+                        continue
+                    dx = p.rect.centerx - self.rect.centerx
+                    dy = p.rect.centery - self.rect.centery
+                    dist = max(1, math.sqrt(dx * dx + dy * dy))
+                    if p.magnet and dist < 450:
+                        # Strong magnet pull
+                        self.rect.x += int(dx / dist * 15)
+                        self.rect.y += int(dy / dist * 15)
+                    elif dist < 300:
+                        # Baseline magnetism — always-on light pull
+                        self.rect.x += int(dx / dist * 5)
+                        self.rect.y += int(dy / dist * 5)
             if self.rect.y > SCREEN_HEIGHT + 30:
                 self.kill()
 
@@ -293,8 +304,8 @@ class PowerUp(RoadSpriteMixin, pygame.sprite.Sprite):
     def update(self, scroll_speed, players=None, road_geometry=None):
         self.pulse += 1
         if self.tier >= 2 and road_geometry and hasattr(self, 'world_z'):
-            # Tiers 1-2: powerups auto-attract toward nearest player
-            if self.tier <= 2 and players and self._projected:
+            # Powerups always aggressively attract toward nearest player
+            if players and self._projected:
                 best_dist = 999999
                 for p in players:
                     if not p.alive:
@@ -304,17 +315,17 @@ class PowerUp(RoadSpriteMixin, pygame.sprite.Sprite):
                     dist = math.sqrt(dx * dx + dy * dy)
                     if dist < best_dist:
                         best_dist = dist
-                if best_dist < 250:
-                    self.lane_offset -= self.lane_offset * 0.04
-                    self.world_z -= 1.5
+                if best_dist < 450:
+                    self.lane_offset -= self.lane_offset * 0.10
+                    self.world_z -= 3.5
             self._draw()
             self._original_image = self.image.copy()
             self.advance_toward_camera(scroll_speed + 2)
             if not self.project(road_geometry):
                 self.kill()
         else:
-            # V1 + tiers 1-2: screen-space magnetism
-            if self.tier <= 2 and players:
+            # Screen-space magnetism — always-on strong pull
+            if players:
                 best_dist = 999999
                 best_p = None
                 for p in players:
@@ -326,12 +337,12 @@ class PowerUp(RoadSpriteMixin, pygame.sprite.Sprite):
                     if dist < best_dist:
                         best_dist = dist
                         best_p = p
-                if best_p and best_dist < 250:
+                if best_p and best_dist < 450:
                     dx = best_p.rect.centerx - self.rect.centerx
                     dy = best_p.rect.centery - self.rect.centery
                     dist = max(1, best_dist)
-                    self.rect.x += int(dx / dist * 4)
-                    self.rect.y += int(dy / dist * 4)
+                    self.rect.x += int(dx / dist * 12)
+                    self.rect.y += int(dy / dist * 12)
             self._draw()
             self.rect.y += scroll_speed + 2
             if self.rect.y > SCREEN_HEIGHT + 30:

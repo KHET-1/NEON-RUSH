@@ -18,6 +18,40 @@ _hud_tick = 0
 # Cache for V2 gradient panel backgrounds (keyed by (w, h))
 _panel_grad_cache = {}
 
+# Pre-allocated heat bar flow surface (reused every frame — no per-frame SRCALPHA alloc)
+_heat_flow_surf = None
+_heat_flow_bar_h = 0
+
+
+def _get_heat_flow_surf(bar_h):
+    """Return cached SRCALPHA surface for heat bar glow (200×bar_h, white 40 alpha)."""
+    global _heat_flow_surf, _heat_flow_bar_h
+    if _heat_flow_surf is None or _heat_flow_bar_h != bar_h:
+        _heat_flow_surf = pygame.Surface((200, bar_h), pygame.SRCALPHA)
+        _heat_flow_surf.fill((255, 255, 255, 40))
+        _heat_flow_bar_h = bar_h
+    return _heat_flow_surf
+
+
+# Max durations (frames) for each powerup — used to compute timer bar fill ratio
+_POWERUP_MAX = {
+    'shield': 600, 'magnet': 480, 'slowmo': 300,
+    'multishot': 360, 'rockets': 480, 'orbit8': 600,
+}
+
+
+def _draw_powerup_timer_bar(screen, x, y, width, fraction, color):
+    """Draw a thin (width × 3px) duration bar. Color shifts to red as time runs low."""
+    pygame.draw.rect(screen, (25, 25, 35), (x, y, width, 3))
+    fill = max(1, int(width * fraction))
+    if fraction < 0.25:
+        bar_col = (255, 60, 60)
+    elif fraction < 0.5:
+        bar_col = (255, 180, 40)
+    else:
+        bar_col = color
+    pygame.draw.rect(screen, bar_col, (x, y, fill, 3))
+
 
 def _get_panel_gradient(w, h):
     """Pre-render dark gradient panel background, cached by size."""
@@ -231,9 +265,7 @@ def _draw_player_panel(screen, player, px, tier, compact, tick):
             flow_w = max(flow_min, fill_w // flow_div)
             flow_start = px + 10 + max(0, min(fill_w - flow_w, fill_w // 2 + flow_x))
             if compact:
-                flow_surf = pygame.Surface((flow_w, bar_h), pygame.SRCALPHA)
-                flow_surf.fill((255, 255, 255, 40))
-                screen.blit(flow_surf, (flow_start, 34))
+                screen.blit(_get_heat_flow_surf(bar_h), (flow_start, 34), (0, 0, flow_w, bar_h))
             else:
                 pygame.draw.rect(screen, (255, 255, 255, 80),
                                  (flow_start, 34, flow_w, bar_h))
@@ -303,52 +335,45 @@ def _draw_player_panel(screen, player, px, tier, compact, tick):
 
 
 def _draw_powerup_indicators(screen, player, px, pup_y, tier):
-    """Draw active powerup indicators for one player."""
+    """Draw active powerup indicators with timer bars showing remaining duration."""
     from core.fonts import FONT_HUD_SM
-    pup_x = px + 10
 
+    # Build list of (active, timer_val, max_val, color, icon_fn_or_label)
+    active = []
+    if player.shield:
+        active.append(('shield', getattr(player, 'shield_timer', 0), SHIELD_BLUE,
+                        _draw_powerup_icon_pentagon, "SHIELD", 55))
+    if player.magnet:
+        active.append(('magnet', getattr(player, 'magnet_timer', 0), MAGNET_PURPLE,
+                        _draw_powerup_icon_horseshoe, "MAGNET", 60))
+    if player.slowmo:
+        active.append(('slowmo', getattr(player, 'slowmo_timer', 0), SLOWMO_GREEN,
+                        _draw_powerup_icon_clock, "SLOW", 48))
+    if getattr(player, 'multishot', False):
+        active.append(('multishot', getattr(player, 'multishot_timer', 0), MULTISHOT_ORANGE,
+                        _draw_powerup_icon_multi, "MULTI", 52))
+    if getattr(player, 'rockets', False):
+        active.append(('rockets', getattr(player, 'rockets_timer', 0), ROCKETS_RED,
+                        _draw_powerup_icon_rocket, "ROCKETS", 65))
+    if getattr(player, 'orbit8', False):
+        active.append(('orbit8', getattr(player, 'orbit8_timer', 0), ORBIT8_PURPLE,
+                        _draw_powerup_icon_orbit, "ORBIT", 50))
+
+    pup_x = px + 10
     if tier >= 3:
-        if player.shield:
-            _draw_powerup_icon_pentagon(screen, pup_x, pup_y, SHIELD_BLUE)
+        for key, timer_val, color, icon_fn, _lbl, _w in active:
+            icon_fn(screen, pup_x, pup_y, color)
+            frac = min(1.0, timer_val / max(1, _POWERUP_MAX.get(key, 600)))
+            _draw_powerup_timer_bar(screen, pup_x, pup_y + 14, 14, frac, color)
             pup_x += 18
-        if player.magnet:
-            _draw_powerup_icon_horseshoe(screen, pup_x, pup_y, MAGNET_PURPLE)
-            pup_x += 18
-        if player.slowmo:
-            _draw_powerup_icon_clock(screen, pup_x, pup_y, SLOWMO_GREEN)
-            pup_x += 18
-        if getattr(player, 'multishot', False):
-            _draw_powerup_icon_multi(screen, pup_x, pup_y, MULTISHOT_ORANGE)
-            pup_x += 18
-        if getattr(player, 'rockets', False):
-            _draw_powerup_icon_rocket(screen, pup_x, pup_y, ROCKETS_RED)
-            pup_x += 18
-        if getattr(player, 'orbit8', False):
-            _draw_powerup_icon_orbit(screen, pup_x, pup_y, ORBIT8_PURPLE)
     else:
-        if player.shield:
-            s = FONT_HUD_SM.render("SHIELD", True, SHIELD_BLUE)
-            screen.blit(s, (pup_x, pup_y))
-            pup_x += 55
-        if player.magnet:
-            s = FONT_HUD_SM.render("MAGNET", True, MAGNET_PURPLE)
-            screen.blit(s, (pup_x, pup_y))
-            pup_x += 60
-        if player.slowmo:
-            s = FONT_HUD_SM.render("SLOW", True, SLOWMO_GREEN)
-            screen.blit(s, (pup_x, pup_y))
-            pup_x += 48
-        if getattr(player, 'multishot', False):
-            s = FONT_HUD_SM.render("MULTI", True, MULTISHOT_ORANGE)
-            screen.blit(s, (pup_x, pup_y))
-            pup_x += 52
-        if getattr(player, 'rockets', False):
-            s = FONT_HUD_SM.render("ROCKETS", True, ROCKETS_RED)
-            screen.blit(s, (pup_x, pup_y))
-            pup_x += 65
-        if getattr(player, 'orbit8', False):
-            s = FONT_HUD_SM.render("ORBIT", True, ORBIT8_PURPLE)
-            screen.blit(s, (pup_x, pup_y))
+        for key, timer_val, color, _icon_fn, label, advance in active:
+            if FONT_HUD_SM:
+                s = FONT_HUD_SM.render(label, True, color)
+                screen.blit(s, (pup_x, pup_y))
+                frac = min(1.0, timer_val / max(1, _POWERUP_MAX.get(key, 600)))
+                _draw_powerup_timer_bar(screen, pup_x, pup_y + 14, advance - 4, frac, color)
+            pup_x += advance
 
 
 def _draw_game_info(screen, game_distance, flare_timer, tier, level_label, compact):

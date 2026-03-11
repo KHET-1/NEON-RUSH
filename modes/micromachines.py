@@ -195,12 +195,15 @@ class MicroMachinesMode(GameMode):
             self.coin_timer = 0
 
         self.powerup_timer += 1
-        if self.powerup_timer > 200:
-            pos = self._spawn_on_track()
-            if pos:
-                pu = MicroPowerUp(pos[0], pos[1], tier=self.shared_state.evolution_tier)
-                self.all_sprites.add(pu)
-                self.powerups_group.add(pu)
+        if self.powerup_timer > 140:
+            # Spawn 1-2 powerups (30% chance for double drop)
+            count = 2 if random.random() < 0.3 else 1
+            for _ in range(count):
+                pos = self._spawn_on_track()
+                if pos:
+                    pu = MicroPowerUp(pos[0], pos[1], tier=self.shared_state.evolution_tier)
+                    self.all_sprites.add(pu)
+                    self.powerups_group.add(pu)
             self.powerup_timer = 0
 
         # Update sprites
@@ -211,7 +214,7 @@ class MicroMachinesMode(GameMode):
         for car in list(self.tiny_cars):
             car.update(self.scroll_speed)
         for c in list(self.coins_group):
-            c.update(self.scroll_speed)
+            c.update(self.scroll_speed, players=alive_players)
         for pu in list(self.powerups_group):
             pu.update(self.scroll_speed, players=alive_players)
             # Sparkle particle trail

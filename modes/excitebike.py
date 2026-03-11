@@ -179,12 +179,16 @@ class ExcitebikeMode(GameMode):
             self.coin_timer = 0
 
         self.powerup_timer += 1
-        if self.powerup_timer > 250:
-            lane = random.randint(0, 2)
-            pu = ExcitebikePowerUp(SCREEN_WIDTH + 40, self.bg.get_lane_y(lane),
-                                   tier=self.shared_state.evolution_tier)
-            self.all_sprites.add(pu)
-            self.powerups_group.add(pu)
+        if self.powerup_timer > 140:
+            # Spawn 1-2 powerups (30% chance for double drop)
+            count = 2 if random.random() < 0.3 else 1
+            for _ in range(count):
+                lane = random.randint(0, 2)
+                pu = ExcitebikePowerUp(SCREEN_WIDTH + 40 + random.randint(0, 60),
+                                       self.bg.get_lane_y(lane),
+                                       tier=self.shared_state.evolution_tier)
+                self.all_sprites.add(pu)
+                self.powerups_group.add(pu)
             self.powerup_timer = 0
 
         # Update sprites
@@ -197,7 +201,7 @@ class ExcitebikeMode(GameMode):
         for racer in list(self.racers):
             racer.update(scroll_speed)
         for c in list(self.coins_group):
-            c.update(scroll_speed)
+            c.update(scroll_speed, players=alive_players)
         for pu in list(self.powerups_group):
             pu.update(scroll_speed, players=alive_players)
             # Sparkle particle trail
